@@ -44,6 +44,10 @@ Friends on the same Wi-Fi can join at `http://<your-computer-ip>:3000/play/<CODE
 
 Vercel can't host this, because it doesn't keep WebSocket connections open. Use a service that runs a long-lived Node process, such as Render, Railway or Fly.io:
 
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/maanthakker/voxelrealms-multiplayer)
+
+The button uses `render.yaml` and only asks for `MONGODB_URI`. To set it up by hand instead:
+
 1. Create a free cluster on [MongoDB Atlas](https://www.mongodb.com/atlas). Add a database user, allow network access from `0.0.0.0/0`, and copy the connection string.
 2. Push this repo to GitHub and create a **Web Service** from it:
    - Build command: `npm install && npm run build`

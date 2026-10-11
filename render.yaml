@@ -1,0 +1,17 @@
+# Render blueprint: one free web service running server.js (Next + API + WebSocket).
+# MONGODB_URI is asked for on first deploy; paste the MongoDB Atlas connection string.
+services:
+  - type: web
+    name: voxelrealms
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /
+    envVars:
+      - key: MONGODB_URI
+        sync: false
+      - key: NODE_VERSION
+        value: "22"
+      - key: NEXT_TELEMETRY_DISABLED
+        value: "1"
