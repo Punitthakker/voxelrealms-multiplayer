@@ -1,0 +1,22 @@
+{
+  "name": "voxel-realms",
+  "version": "0.2.0",
+  "private": true,
+  "scripts": {
+    "dev": "node server.js",
+    "build": "next build",
+    "start": "NODE_ENV=production node server.js",
+    "db": "mkdir -p .data/db && mongod --dbpath .data/db --bind_ip 127.0.0.1"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^4.22.3",
+    "mongoose": "^8.24.5",
+    "next": "^15.5.27",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "ws": "^8.22.0"
+  }
+}
