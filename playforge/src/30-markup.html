@@ -1,0 +1,256 @@
+<div id="boot" role="status" aria-live="polite">
+  <div class="boot-inner">
+    <svg class="mark" aria-hidden="true"><use href="#pf-mark"/></svg>
+    <div class="wordmark">Play<b>Forge</b></div>
+    <p id="boot-msg">Warming up the forge…</p>
+  </div>
+</div>
+
+<!-- ===================== HOME ===================== -->
+<section id="home" class="screen" aria-label="PlayForge home" hidden>
+  <div class="home-inner">
+    <header class="home-head">
+      <div class="brand" aria-label="PlayForge">
+        <svg aria-hidden="true"><use href="#pf-mark"/></svg>
+        <span class="wordmark">Play<b>Forge</b></span>
+      </div>
+      <div class="grow"></div>
+      <button class="me-chip" id="home-me" aria-label="Edit your avatar">
+        <canvas id="home-me-head" class="px" width="8" height="8"></canvas>
+        <span id="home-me-name">Player</span>
+      </button>
+      <button class="icon-btn" id="home-settings" aria-label="Settings"><svg class="i"><use href="#i-sliders"/></svg></button>
+    </header>
+
+    <section class="player-card" aria-labelledby="pc-name">
+      <canvas id="home-fig" class="px fig" width="16" height="32" aria-hidden="true"></canvas>
+      <div>
+        <h1 id="pc-name">Player</h1>
+        <p id="pc-status">Loading your profile…</p>
+        <div class="row">
+          <button class="btn btn-ember" id="pc-edit"><svg class="i"><use href="#i-pencil"/></svg>Edit avatar</button>
+          <button class="btn" id="pc-play"><svg class="i fill"><use href="#i-play"/></svg>Play Forge Park</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="shelf" aria-labelledby="sh-mine">
+      <div class="shelf-head"><h2 id="sh-mine">Your shelf</h2><small>Your games and the ones friends export</small></div>
+      <div class="tile-row" id="row-mine">
+        <button class="plus-tile" id="tile-plus" aria-label="Create a new game">
+          <span class="plus"><svg class="i"><use href="#i-plus"/></svg></span>New game
+        </button>
+      </div>
+    </section>
+
+    <section class="shelf" aria-labelledby="sh-pop">
+      <div class="shelf-head"><h2 id="sh-pop">Popular</h2><small>Ranked by likes</small></div>
+      <div class="tile-row" id="row-pop">
+        <div class="empty-card empty-wide"><strong>No shared games yet</strong>When people export games from Studio, the most-liked ones show up here.</div>
+      </div>
+    </section>
+
+    <section class="shelf" aria-labelledby="sh-new">
+      <div class="shelf-head"><h2 id="sh-new">New</h2><small>Fresh exports, newest first</small></div>
+      <div class="tile-row" id="row-new">
+        <div class="empty-card empty-wide"><strong>Nothing new yet</strong>Freshly exported games land here first. Make one with the + tile.</div>
+      </div>
+    </section>
+
+    <p class="home-foot">PlayForge build 0.2 · Engine, avatar and multiplayer</p>
+  </div>
+</section>
+
+<!-- ===================== GAME ===================== -->
+<section id="game" class="screen" aria-label="Game" hidden>
+  <div class="gl-host" id="game-host"></div>
+  <div id="touch-layer" aria-hidden="true">
+    <div id="joy-base" class="touch-only idle"><div id="joy-knob"></div></div>
+  </div>
+  <button class="hud-round" id="hud-menu" aria-label="Open game menu"><svg aria-hidden="true"><use href="#pf-mark"/></svg></button>
+  <button class="hud-round" id="hud-chat" aria-label="Chat" aria-expanded="false" aria-controls="chat" hidden><svg class="i"><use href="#i-chat"/></svg><span class="chat-badge" id="chat-badge" hidden>0</span></button>
+  <section class="chat-panel" id="chat" aria-label="Chat" hidden>
+    <div class="chat-head"><b>Chat</b><small id="chat-status"></small><button id="chat-close" aria-label="Collapse chat"><svg class="i"><use href="#i-chev-up"/></svg></button></div>
+    <ol id="chat-log" aria-live="polite"></ol>
+    <p class="chat-note" id="chat-note" role="status" hidden></p>
+    <form class="chat-form" id="chat-form" autocomplete="off">
+      <input id="chat-input" maxlength="150" placeholder="Say something nice…" enterkeyhint="send" spellcheck="true" aria-label="Chat message">
+      <span class="cnt" id="chat-count" aria-hidden="true">0/150</span>
+      <button type="submit" id="chat-send" aria-label="Send message"><svg class="i"><use href="#i-send"/></svg></button>
+    </form>
+  </section>
+  <div class="hud-chip" id="hud-title">Forge Park</div>
+  <div class="hud-chip" id="hud-fps" hidden>-- fps</div>
+  <div class="hud-chip desk-only" id="hud-hint">WASD to move · Space to jump · Drag to look · Scroll to zoom</div>
+  <button class="hud-round touch-only" id="hud-jump" aria-label="Jump"><svg class="i"><use href="#i-jump"/></svg></button>
+  <div class="hud" id="hud">
+    <div class="hud-top"><div class="hud-obj" id="hud-obj" hidden></div><div class="hud-stats" id="hud-stats" aria-live="polite"></div></div>
+    <div class="hud-board" id="hud-board" hidden></div>
+    <div class="hud-flash" id="hud-flash" role="status" aria-live="assertive"></div>
+    <div class="hud-cross" id="hud-cross" hidden></div>
+    <div class="hud-vig" id="hud-vig"></div>
+    <div class="hud-hp" id="hud-hp" hidden><div class="bar"><i id="hud-hp-fill"></i></div><span id="hud-hp-text"></span></div>
+    <div class="hud-prompt" id="hud-prompt" hidden></div>
+    <div class="hud-actions" id="hud-actions"></div>
+    <button class="hud-stop" id="hud-stop" hidden><svg class="i fill"><use href="#i-stop"/></svg>Stop test</button>
+    <div class="hud-end" id="hud-end" hidden>
+      <div class="end-card" role="dialog" aria-modal="true" aria-labelledby="end-title">
+        <h2 id="end-title"></h2><p id="end-sub"></p><dl id="end-stats"></dl>
+        <div class="end-btns"><button class="btn btn-ember" id="end-again">Play again</button><button class="btn" id="end-leave">Leave game</button></div>
+      </div>
+    </div>
+  </div>
+  <div id="loading" hidden><div class="ld"><svg aria-hidden="true"><use href="#pf-mark"/></svg><b id="loading-title">Loading</b><div class="bar"><i></i></div></div></div>
+</section>
+
+<!-- ===================== AVATAR EDITOR ===================== -->
+<section id="avatar" class="screen" aria-label="Avatar editor" hidden>
+  <header class="ed-bar">
+    <button class="icon-btn" id="av-back" aria-label="Back to home"><svg class="i"><use href="#i-back"/></svg></button>
+    <h1 class="ed-title">Avatar</h1>
+    <span class="ed-status" id="av-status">Saved</span>
+    <div class="grow"></div>
+    <button class="icon-btn" id="av-undo" aria-label="Undo" disabled><svg class="i"><use href="#i-undo"/></svg></button>
+    <button class="icon-btn" id="av-redo" aria-label="Redo" disabled><svg class="i"><use href="#i-redo"/></svg></button>
+    <button class="btn btn-ember" id="av-save"><svg class="i"><use href="#i-check"/></svg>Save</button>
+  </header>
+  <div class="av-body">
+    <div class="av-stage">
+      <div class="av-view" id="av-view"></div>
+      <div class="av-stage-ui">
+        <div class="seg" role="group" aria-label="Layer to paint">
+          <button id="layer-base" aria-pressed="true">Base</button>
+          <button id="layer-outer" aria-pressed="false">Outer</button>
+        </div>
+        <div class="grow"></div>
+        <button class="tool" id="tool-rotate" aria-pressed="false" aria-label="Turn tool: drag anywhere to turn the avatar"><svg class="i"><use href="#i-hand"/></svg></button>
+      </div>
+      <div class="stage-hint" id="stage-hint">Paint on the avatar · drag the background to turn it</div>
+    </div>
+    <div class="av-tools" role="toolbar" aria-label="Paint tools">
+      <button class="tool" data-tool="pencil" aria-pressed="true" aria-label="Pencil"><svg class="i"><use href="#i-pencil"/></svg></button>
+      <button class="tool" data-tool="eraser" aria-pressed="false" aria-label="Eraser"><svg class="i"><use href="#i-eraser"/></svg></button>
+      <button class="tool" data-tool="bucket" aria-pressed="false" aria-label="Fill bucket"><svg class="i"><use href="#i-bucket"/></svg></button>
+      <button class="tool" data-tool="picker" aria-pressed="false" aria-label="Eyedropper"><svg class="i"><use href="#i-dropper"/></svg></button>
+      <span class="tool-sep" aria-hidden="true"></span>
+      <button class="tool" id="opt-mirror" aria-pressed="false" aria-label="Mirror left and right"><svg class="i"><use href="#i-mirror"/></svg></button>
+      <button class="tool size-btn" data-size="1" aria-pressed="true" aria-label="Brush size 1 pixel">1</button>
+      <button class="tool size-btn" data-size="2" aria-pressed="false" aria-label="Brush size 2 pixels">2</button>
+      <button class="tool size-btn" data-size="3" aria-pressed="false" aria-label="Brush size 3 pixels">3</button>
+      <span class="tool-sep" aria-hidden="true"></span>
+      <button class="tool" id="opt-grid" aria-pressed="true" aria-label="Show pixel grid"><svg class="i"><use href="#i-grid"/></svg></button>
+      <button class="tool" id="opt-random" aria-label="Randomize skin"><svg class="i"><use href="#i-dice"/></svg></button>
+    </div>
+    <div class="av-panel">
+      <div class="tabs" role="tablist" aria-label="Avatar panels">
+        <button role="tab" id="tab-btn-paint" aria-selected="true" aria-controls="tab-paint">Paint</button>
+        <button role="tab" id="tab-btn-skins" aria-selected="false" aria-controls="tab-skins">Skins</button>
+        <button role="tab" id="tab-btn-name" aria-selected="false" aria-controls="tab-name">Name</button>
+      </div>
+      <div class="tab-panel" id="tab-paint" role="tabpanel" aria-labelledby="tab-btn-paint">
+        <div class="map-wrap"><canvas id="av-map" width="384" height="384" aria-label="Flat skin map, 64 by 64 pixels"></canvas></div>
+        <div class="map-caption" id="av-caption">Skin map · 64 × 64</div>
+        <div class="color-row">
+          <label class="cur-swatch" id="cur-swatch" title="Pick a custom color"><input type="color" id="av-color" value="#ff6a2b" aria-label="Custom color"></label>
+          <input class="text-input hex-input" id="av-hex" value="#FF6A2B" maxlength="7" aria-label="Hex color" spellcheck="false" autocomplete="off">
+        </div>
+        <h3 class="sub-h">Palette</h3>
+        <div class="swatches" id="av-palette"></div>
+        <h3 class="sub-h">Recent colors</h3>
+        <div class="swatches" id="av-recent"></div>
+      </div>
+      <div class="tab-panel" id="tab-skins" role="tabpanel" aria-labelledby="tab-btn-skins" hidden>
+        <h3 class="sub-h">Your skin slots</h3>
+        <div class="slots" id="av-slots"></div>
+        <p class="help" id="slots-help">Tap a slot to edit it. Save puts your changes in that slot, and you wear it.</p>
+        <h3 class="sub-h">Starter skins</h3>
+        <div class="starters" id="av-starters"></div>
+        <div class="btn-row">
+          <button class="btn" id="av-random2"><svg class="i"><use href="#i-dice"/></svg>Randomize</button>
+          <label class="btn" for="av-import"><svg class="i"><use href="#i-upload"/></svg>Import PNG</label>
+          <input type="file" id="av-import" accept="image/png" class="sr-only">
+          <button class="btn" id="av-export" hidden><svg class="i"><use href="#i-download"/></svg>Download PNG</button>
+        </div>
+      </div>
+      <div class="tab-panel" id="tab-name" role="tabpanel" aria-labelledby="tab-btn-name" hidden>
+        <div class="field">
+          <label for="av-nick"><b>Display name</b></label>
+          <input class="text-input" id="av-nick" maxlength="20" autocomplete="off" spellcheck="false">
+          <p class="help" id="nick-help">Shown on the nametag above your head. 3 to 20 letters, numbers, spaces, dots, dashes or underscores.</p>
+        </div>
+        <div class="btn-row"><button class="btn btn-ember" id="av-nick-save">Save name</button><button class="btn btn-quiet" id="av-nick-clear">Use my account name</button></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== SHEETS ===================== -->
+<div class="modal" id="settings-modal" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="set-title">
+    <div class="sheet-head"><h2 id="set-title">Settings</h2><button class="icon-btn" data-close aria-label="Close settings"><svg class="i"><use href="#i-close"/></svg></button></div>
+    <div class="field">
+      <b>Graphics</b>
+      <div class="seg" role="group" aria-label="Graphics preset" id="set-preset">
+        <button data-preset="low">Low</button><button data-preset="medium">Medium</button><button data-preset="high">High</button>
+      </div>
+      <small class="help" id="preset-help"></small>
+    </div>
+    <div class="set-row"><div class="lbl"><b>Dynamic resolution</b><small>Renders fewer pixels when the frame rate drops</small></div><label class="switch"><input type="checkbox" id="set-dynres" role="switch"><span></span></label></div>
+    <div class="set-row"><div class="lbl"><b>Show FPS</b><small>Frame rate counter in games</small></div><label class="switch"><input type="checkbox" id="set-fps" role="switch"><span></span></label></div>
+    <hr>
+    <div class="field"><div class="set-row"><b><label for="set-vol">Volume</label></b><span class="set-val" id="set-vol-v">70</span></div><input type="range" id="set-vol" min="0" max="100" step="5"></div>
+    <div class="field"><div class="set-row"><b><label for="set-sens">Camera sensitivity</label></b><span class="set-val" id="set-sens-v">1.0×</span></div><input type="range" id="set-sens" min="0.2" max="2" step="0.1"></div>
+    <div class="set-row"><div class="lbl"><b>Chat bubbles</b><small>Show new messages above players' heads</small></div><label class="switch"><input type="checkbox" id="set-bubbles" role="switch"><span></span></label></div>
+    <div class="set-row"><div class="lbl"><b>Invert vertical look</b><small>Drag up to look down</small></div><label class="switch"><input type="checkbox" id="set-invert" role="switch"><span></span></label></div>
+  </div>
+</div>
+
+<div class="modal" id="game-menu" hidden>
+  <div class="sheet menu-sheet" role="dialog" aria-modal="true" aria-labelledby="gm-title">
+    <div class="sheet-head"><svg class="menu-mark" aria-hidden="true"><use href="#pf-mark"/></svg><h2 id="gm-title">Forge Park</h2><button class="icon-btn" data-close aria-label="Close menu"><svg class="i"><use href="#i-close"/></svg></button></div>
+    <div class="menu-list">
+      <button class="primary" id="gm-resume"><svg class="i fill"><use href="#i-play"/></svg>Resume</button>
+    </div>
+    <section class="plist" aria-labelledby="gm-ph">
+      <div class="plist-head"><h3 class="sub-h" id="gm-ph">Players</h3><small id="gm-pcount"></small></div>
+      <div class="plist-rows" id="gm-players"></div>
+    </section>
+    <div class="menu-list two">
+      <button id="gm-reset"><svg class="i"><use href="#i-reset"/></svg>Reset character</button>
+      <button id="gm-settings"><svg class="i"><use href="#i-sliders"/></svg>Settings</button>
+    </div>
+    <div class="menu-list">
+      <button class="danger" id="gm-leave"><svg class="i"><use href="#i-leave"/></svg>Leave game</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="gamepage-modal" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="gp-title">
+    <div class="sheet-head"><h2 id="gp-title">Forge Park</h2><button class="icon-btn" data-close aria-label="Close"><svg class="i"><use href="#i-close"/></svg></button></div>
+    <div class="gp-thumb"><img id="gp-img" alt=""></div>
+    <div class="gp-meta"><span><svg class="i"><use href="#i-person"/></svg><span id="gp-creator">PlayForge</span></span><span><span class="dot-online"></span><span id="gp-online">Solo</span></span></div>
+    <p id="gp-desc"></p>
+    <button class="btn btn-ember" id="gp-play"><svg class="i fill"><use href="#i-play"/></svg>Play</button>
+  </div>
+</div>
+
+<div class="modal" id="report-modal" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="rp-title">
+    <div class="sheet-head"><h2 id="rp-title">Report player</h2><button class="icon-btn" data-close aria-label="Close report"><svg class="i"><use href="#i-close"/></svg></button></div>
+    <p class="help">Reports go to the owner of this PlayForge, with the player's last few chat messages. The player isn't told who reported them.</p>
+    <div class="field"><b id="rp-reason-label">What happened?</b><div class="reasons" id="rp-reasons" role="radiogroup" aria-labelledby="rp-reason-label"></div></div>
+    <div class="field"><label for="rp-note"><b>Anything else?</b> <span class="help">Optional</span></label><textarea class="text-input" id="rp-note" maxlength="200" rows="3"></textarea></div>
+    <div class="choice-btns"><button class="btn" data-close>Cancel</button><button class="btn btn-ember" id="rp-send" disabled>Send report</button></div>
+  </div>
+</div>
+
+<div class="modal" id="choice-modal" hidden>
+  <div class="sheet" role="alertdialog" aria-modal="true" aria-labelledby="ch-title" aria-describedby="ch-body">
+    <div class="sheet-head"><h2 id="ch-title"></h2></div>
+    <p id="ch-body"></p>
+    <div class="choice-btns" id="ch-btns"></div>
+  </div>
+</div>
+
+<div id="toast" role="status" aria-live="polite"></div>
