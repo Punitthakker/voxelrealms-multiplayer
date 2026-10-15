@@ -53,7 +53,7 @@ A part is plain JSON. Every level, built-in or made in Studio, is a list of part
   canCollide: true, transparency: 0..1,
   behavior: 'kill' | 'damage' | 'checkpoint' | 'finish' | 'coin' | 'bounce' | 'speed' | 'spin' | 'move' | 'swing' | 'vanish' | 'fake' | 'teleport',
   bp: { ... },               // behavior parameters, see below
-  tag: 'tree',               // free string for your mode's own rules (Game.partsByTag, Game.near, onTouch)
+  tag: 'tree',               // free string for your mode's own rules (Game.partsByTag, Game.near, onTouch). tag 'hazard' kills on touch (use it on spinning/swinging/moving parts)
 }
 ```
 

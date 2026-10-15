@@ -77,7 +77,7 @@ const Phys = (() => {
     return -1;
   }
   const R = 0.4, OFFS = [0.75, 1.2, 1.6], PROBE_UP = 0.72, MAX_UP = 0.6, WALKABLE = 0.62;
-  const PROBES = [[0, 0], [0.27, 0], [-0.27, 0], [0, 0.27], [0, -0.27]];
+  const PROBES = [[0, 0], [0.27, 0], [-0.27, 0], [0, 0.27], [0, -0.27], [0.2, 0.2], [-0.2, 0.2], [0.2, -0.2], [-0.2, -0.2]];
   function createBody(spawn) {
     return {
       pos: new V3().copy(spawn), vel: new V3(), grounded: false, coyote: 0, jumpBuf: 0, noSnap: 0, normal: new V3(0, 1, 0),
@@ -112,12 +112,14 @@ const Phys = (() => {
     b.pos.x += b.vel.x * dt; b.pos.y += b.vel.y * dt; b.pos.z += b.vel.z * dt;
     gather(b.pos.x - 1.2, b.pos.y - 1.6, b.pos.z - 1.2, b.pos.x + 1.2, b.pos.y + 2.6, b.pos.z + 1.2);
     // Body spheres push out of walls and ceilings.
+    let restC = null;
     for (let it = 0; it < 3; it++) {
       let moved = false;
       for (const off of OFFS) for (const c of cands) {
         const cy = b.pos.y + off, d = sdf(c, b.pos.x, cy, b.pos.z);
         if (d < R) {
           grad(c, b.pos.x, cy, b.pos.z, gn); b.pos.addScaledVector(gn, R - d);
+          if (off === OFFS[0] && gn.y > WALKABLE) restC = c;
           const vn = b.vel.dot(gn); if (vn < 0) b.vel.addScaledVector(gn, -vn); moved = true;
         }
       }
@@ -140,6 +142,8 @@ const Phys = (() => {
         }
       }
     }
+    // Resting on an edge the probes can't see (a gap between tiles): still counts as standing.
+    if (!b.grounded && restC && b.vel.y <= 0.5 && b.noSnap <= 0) { b.grounded = true; b.groundC = restC; b.vel.y = 0; }
     if (b.grounded) b.coyote = 0.1; else b.coyote -= dt;
   }
   // Every collider (solid or trigger) the body overlaps: feet, middle and head test spheres.

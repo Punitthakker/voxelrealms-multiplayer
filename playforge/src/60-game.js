@@ -112,7 +112,7 @@ const Game = {
     else { Engine.setMode('home'); showScreen('home'); if (Home.onReturn) Home.onReturn(); }
   },
   hintText() {
-    if (this.mode && this.mode.hint) return this.mode.hint;
+    if (this.mode && typeof this.mode.hint === 'string') return this.mode.hint;
     return this.camMode === 'shoulder' ? 'WASD to move · Click to aim and shoot · Space to jump · Esc frees the mouse' : 'WASD to move · Space to jump · Drag to look · Scroll to zoom';
   },
   openMenu() {
@@ -286,6 +286,7 @@ const Game = {
   // ---- per-frame ----
   touchBegin(p, c) {
     if (callMode('onTouch', p, this, c) === true) return;
+    if (p.tag === 'hazard') { this.kill('hazard'); return; } // any part (spinning, moving...) can be deadly
     const bp = p.bp || {};
     switch (p.behavior) {
       case 'kill': this.kill('hazard'); break;
@@ -393,7 +394,7 @@ const Game = {
     this.curDist = allowed < this.curDist ? allowed : damp(this.curDist, allowed, 5, dt);
     this.cam.position.copy(this.target).addScaledVector(this.dir, this.curDist);
     this.cam.lookAt(this.target);
-    av.root.visible = !this.dead && this.curDist > 1.1;
+    av.root.visible = !this.dead && this.curDist > 1.1; av.tag.visible = this.curDist > 6;
     Net.tick(dt);
     Fx.update(dt);
     World.update(dt, b.pos, this.cam);

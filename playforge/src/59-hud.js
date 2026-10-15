@@ -34,6 +34,7 @@ const Hud = {
   },
   removeStat(key) { const s = this.stats.get(key); if (s) { s.el.remove(); this.stats.delete(key); } },
   hp(cur, max = 100) {
+    if (this.el.hp.hidden) { const hint = $('#hud-hint'); if (hint) hint.style.opacity = '0'; }
     this.el.hp.hidden = false; const k = clamp(cur / max, 0, 1);
     this.el.hpFill.style.width = (k * 100).toFixed(1) + '%'; this.el.hpFill.classList.toggle('low', k < 0.3);
     this.el.hpText.textContent = Math.ceil(Math.max(0, cur)) + ' / ' + max;
