@@ -1,6 +1,6 @@
 /* ---------- 11b. HUD for games ---------- */
 // Icons available to stat chips and action buttons (ids from the SVG sprite, without "i-").
-const HUD_ICONS = ['clock', 'coin', 'skull', 'flag', 'star', 'moon', 'sun', 'log', 'fire', 'target', 'trophy', 'axe', 'bolt', 'blaster', 'shield', 'key', 'gem', 'drop', 'heart', 'users', 'hand', 'jump', 'play'];
+const HUD_ICONS = ['clock', 'coin', 'skull', 'flag', 'star', 'moon', 'sun', 'log', 'fire', 'target', 'trophy', 'axe', 'bolt', 'blaster', 'shield', 'key', 'gem', 'drop', 'heart', 'users', 'hand', 'jump', 'play', 'berry', 'eye'];
 const iconSvg = name => `<svg class="i" aria-hidden="true"><use href="#i-${HUD_ICONS.includes(name) ? name : 'star'}"/></svg>`;
 function fmtTime(s) {
   s = Math.max(0, s); const m = Math.floor(s / 60), r = s - m * 60;

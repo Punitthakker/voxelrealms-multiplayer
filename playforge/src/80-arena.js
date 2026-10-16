@@ -100,11 +100,9 @@ function arenaHillMap(R) {
 }
 function arenaPushMap(R) {
   const parts = [], P = (...a) => parts.push(mkPart(...a)), cols = ['#FF6A2B', '#FFC53A', '#2D62F0'];
-  P('cylinder', [0, 0, 0], [10, 1, 10], '#FFFFFF', 'plastic', { name: 'Center', tag: 'ring0' });
-  [[5, 10, 'ring1'], [10, 16, 'ring2'], [16, 22, 'ring3']].forEach(([r0, r1, tag], k) => {
-    const n = 10 + k * 4, rm = (r0 + r1) / 2;
-    for (let i = 0; i < n; i++) { const a = (i + 0.5) / n * Math.PI * 2, w = (2 * Math.PI * rm) / n + 0.3; P('block', [Math.cos(a) * rm, 0, Math.sin(a) * rm], [r1 - r0, 1, w], cols[(i + k) % 3], 'plastic', { name: 'Floor segment', rot: [0, -a * 57.3, 0], tag }); }
-  });
+  // Nested discs, each a little lower than the one inside it, so a ring can vanish on its own.
+  [[44, 0.38, 'ring3', cols[2]], [32, 0.42, 'ring2', cols[1]], [20, 0.46, 'ring1', cols[0]], [10, 0.5, 'ring0', '#FFFFFF']].forEach(([d, top, tag, col]) =>
+    P('cylinder', [0, top - 0.5, 0], [d, 1, d], col, 'plastic', { name: 'Floor ring', tag }));
   P('block', [0, -20, 0], [300, 2, 300], '#6CA8E0', 'ice', { name: 'Clouds below', canCollide: false, transparency: 0.4 });
   [0, 1, 2, 3].forEach(i => { const a = i / 4 * Math.PI * 2 + 0.4; P('cylinder', [Math.cos(a) * 13, 0.53, Math.sin(a) * 13], [2.4, 0.06, 2.4], '#FFFFFF', 'neon', { name: 'Spawn point', canCollide: false, tag: 'spawnpoint', bp: { i, team: i % 2, yaw: Math.atan2(-Math.cos(a), -Math.sin(a)) + Math.PI } }); });
   return { parts, spawn: [Math.cos(0.4) * 13, 0.6, Math.sin(0.4) * 13], spawnYaw: Math.atan2(-Math.cos(0.4), -Math.sin(0.4)) + Math.PI };
@@ -211,7 +209,7 @@ Modes.rivals = {
       dir.copy(aim).sub(from).normalize();
       dir.x += (R() - 0.5) * 2 * w.spread; dir.y += (R() - 0.5) * 2 * w.spread; dir.z += (R() - 0.5) * 2 * w.spread; dir.normalize();
       if (w.grav) dir.y += (w.grav / w.speed) * 0.02 * from.distanceTo(aim) / 10;
-      ArenaShots.fire({ from: from.clone(), dir: dir.clone().normalize(), speed: w.speed, grav: w.grav, size: w.size, dmg: w.dmg, owner, team, color });
+      ArenaShots.fire({ from: from.clone(), dir: dir.clone().normalize(), speed: w.speed, grav: w.grav, size: w.size, dmg: owner === 'me' ? w.dmg : Math.round(w.dmg * (G.modeOpts.botDmg || 0.7)), owner, team, color });
     }
     Sfx.play('shoot');
   },
@@ -329,8 +327,8 @@ Modes.rivals = {
     if (d.reload > 0) { if ((d.reload -= dt) <= 0) d.ammo = w.mag; return; }
     if (los && d.cool <= 0 && best < far * 1.6) {
       if (d.ammo <= 0) { d.reload = w.reload; return; }
-      d.cool = w.rate * (w.auto ? 1.6 : 1.15) + G.R() * 0.15; d.ammo--;
-      const err = Math.max(0.25, d.err - G.time * 0.004) * (0.5 + dist / 30);
+      d.cool = w.rate * (w.auto ? 2.1 : 1.3) + G.R() * 0.2; d.ammo--;
+      const err = Math.max(0.35, d.err - G.time * 0.003) * (0.6 + dist / 25);
       const tv = tgt === 'me' ? G.body.vel : tgt.body.vel, lead = dist / w.speed * 0.6;
       const aim = to.clone().add(new THREE.Vector3(tv.x * lead + (G.R() - 0.5) * err * 2, (G.R() - 0.5) * err, tv.z * lead + (G.R() - 0.5) * err * 2));
       const color = this.format === 'ffa' ? ['#FF6A2B', '#2D9CF0', '#7CFF6B', '#FF5CA8'][(this.bots.indexOf(b) + 1) % 4] : TEAM_COLORS[b.team];

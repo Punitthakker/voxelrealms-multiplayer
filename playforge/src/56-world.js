@@ -162,6 +162,7 @@ const World = {
     this.hemi.color.set(e.hemiSky); this.hemi.groundColor.set(e.hemiGround); this.hemi.intensity = e.hemiI;
     this.sun.color.set(e.sun); this.sun.intensity = e.sunI;
     this.stars.material.opacity = Number(e.stars) || 0; this.stars.visible = this.stars.material.opacity > 0.02;
+    if (this.clouds) this.clouds.visible = !!PRESETS[Settings.preset].clouds && e.clouds !== false;
     this.envNow = e; this.applyFog();
   },
   // Blend two sky presets (or preset objects), t in 0..1. Used for day/night cycles.
