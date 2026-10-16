@@ -154,8 +154,9 @@ const Home = {
   },
   builtin() { if (!this._builtin) this._builtin = GAMES.map(d => this.fromBuiltin(d)); return this._builtin; },
   catalog() {
-    const name = Profile.displayName();
-    return { builtin: this.builtin(), drafts: Library.drafts().map(d => this.fromDraft(d, name)), community: Library.published.map(s => this.fromSummary(s)) };
+    const name = Profile.displayName(), drafts = Library.drafts().map(d => this.fromDraft(d, name)), byId = new Map(drafts.map(d => [d.id, d]));
+    const community = Library.published.map(s => { const e = this.fromSummary(s); if (e.mine && byId.has(e.id)) e.local = byId.get(e.id); return e; });
+    return { builtin: this.builtin(), drafts, community };
   },
   catsOf(e) {
     const out = [];
@@ -172,6 +173,7 @@ const Home = {
   online(e) { return Net.lobby ? Net.onlineCount(e.id) : null; },
   badge(e) { return e.kind === 'draft' ? (e.published ? 'Published' : 'Draft') : e.kind === 'community' && e.mine ? 'Yours' : ''; },
   thumbSrc(e) {
+    if (e.local) return this.thumbSrc(e.local); // your own published game: the draft on this device has the freshest picture
     if (e.thumbUrl) return { url: e.thumbUrl };
     if (e.kind === 'builtin' || e.kind === 'def') return { def: e.def };
     if (e.kind === 'draft') return { def: Object.assign(Library.toDef(e.doc, e.creator), { thumbKey: 'draft:' + e.id + ':' + (e.updatedAt || 0) }) };
@@ -243,7 +245,7 @@ const Home = {
     if (this.view === 'rows') this.rows.forEach(r => this.updateArrows(r));
     if (this.pageEntry) this.refreshPage();
   },
-  sig(e) { return [e.key, e.title, e.creator, this.likes(e), this.badge(e), e.updatedAt || 0, e.thumbUrl ? e.thumbUrl.length : 0, e.desc.length].join('|'); },
+  sig(e) { const p = e.local || e; return [e.key, e.title, e.creator, this.likes(e), this.badge(e), p.updatedAt || 0, p.thumbUrl ? p.thumbUrl.length : 0, e.desc.length].join('|'); },
   fill(id, items, opts = {}) {
     const r = this.rows.get(id); if (!r) return;
     r.items = items;
@@ -364,7 +366,7 @@ const Home = {
     const e = this.pageEntry;
     if (e) {
       const n = e.kind === 'draft' && !e.published ? null : this.online(e);
-      $('#gp-online').textContent = n === null ? (e.kind === 'draft' && !e.published ? 'Only you' : 'Solo') : n === 1 ? '1 player here now' : `${n} players here now`;
+      $('#gp-online').textContent = n === null ? (e.kind === 'draft' && !e.published ? 'Only you' : 'Solo') : !n ? 'Nobody playing right now' : n === 1 ? '1 player here now' : `${n} players here now`;
       $('#gp-online-wrap').classList.toggle('live', !!n);
     }
   },
@@ -461,10 +463,12 @@ const Home = {
     if (e.kind === 'community' && e.mine) { const d = Library.getDraft(e.id); if (d) e = this.fromDraft(d, Profile.displayName()); }
     const m = $('#gamepage-modal'), was = !m.hidden;
     this.pageEntry = e; this.likeOverride = null; this.renderPage();
-    if (!was) { Modals.open(m); m.onClose = () => this.closedPage(); }
+    if (!was) { this.opener = document.activeElement; Modals.open(m); m.onClose = () => this.closedPage(); }
   },
   closedPage() {
     this.pageEntry = null; this.likeOverride = null;
+    const o = this.opener; this.opener = null; // keyboard users land back on the tile they opened
+    if (o && o.isConnected && o.focus && Engine.mode === 'home' && !Modals.top()) { try { o.focus({ preventScroll: true }); } catch (e) { /* gone */ } }
     if (this.pageThumb) { const t = this.pageThumb; if (t.cb) Thumbs.cancel(t.def, t.cb); this.pageThumb = null; }
   },
   setPageThumb(e) {
@@ -511,6 +515,7 @@ const Home = {
       }
       more.appendChild(homeBtn('btn', 'copy', 'Edit a copy', () => this.editCopy(e)));
     }
+    more.classList.toggle('two', more.children.length === 4);
     $('#gp-note').hidden = !note; $('#gp-note').textContent = note;
     this.renderPageLike();
     this.updateOnline();
@@ -555,18 +560,18 @@ const Home = {
   makeGame() {
     Sfx.play('click');
     const S = this.studio(); if (!S) return;
-    Modals.close($('#gamepage-modal')); S.newGame();
+    this.navAway(); S.newGame();
   },
   editDraft(e) {
     const S = this.studio(); if (!S) return;
     const d = Library.getDraft(e.id); if (!d) { toast('That game is no longer on this device.', true); return; }
-    Modals.close($('#gamepage-modal')); S.open(d);
+    this.navAway(); S.open(d);
   },
   async editCopy(e) {
     if (!this.studio()) return;
     const def = await this.defFor(e); if (!def) return;
     if (!this.studio()) return;
-    Modals.close($('#gamepage-modal')); Studio.remix(def);
+    this.navAway(); Studio.remix(def);
   },
   // The playable definition behind an entry; community games are fetched first.
   async defFor(e) {
@@ -584,8 +589,13 @@ const Home = {
     if (Engine.mode !== 'home' || this.starting) return;
     const def = await this.defFor(e);
     if (!def || Engine.mode !== 'home') return;
-    Modals.close($('#gamepage-modal'));
+    this.navAway();
     Game.enter(def);
+  },
+  // Leaving home for a game or Studio: close the page without handing focus back to a tile that is about to hide.
+  navAway() {
+    this.opener = null; Modals.close($('#gamepage-modal'));
+    const a = document.activeElement; if (a && a !== document.body && a.blur && $('#home').contains(a)) a.blur();
   },
   async like(e) {
     const key = this.likeKey(e);
