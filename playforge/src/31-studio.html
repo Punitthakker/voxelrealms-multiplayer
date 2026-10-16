@@ -1,0 +1,80 @@
+<!-- ===================== STUDIO ===================== -->
+<section id="studio" class="screen" aria-label="PlayForge Studio" hidden>
+  <header class="ed-bar st-bar">
+    <button class="icon-btn" id="st-back" aria-label="Back to home"><svg class="i"><use href="#i-back"/></svg></button>
+    <input class="st-title" id="st-title" maxlength="40" aria-label="Game name" spellcheck="false" autocomplete="off">
+    <span class="ed-status" id="st-status">Saved on this device</span>
+    <div class="grow"></div>
+    <button class="icon-btn" id="st-undo" aria-label="Undo" disabled><svg class="i"><use href="#i-undo"/></svg></button>
+    <button class="icon-btn" id="st-redo" aria-label="Redo" disabled><svg class="i"><use href="#i-redo"/></svg></button>
+    <button class="btn st-wide" id="st-game" aria-label="Game settings"><svg class="i"><use href="#i-sliders"/></svg><span>Game</span></button>
+    <button class="btn st-wide" id="st-publish" aria-label="Publish"><svg class="i"><use href="#i-upload"/></svg><span>Publish</span></button>
+    <button class="btn btn-ember" id="st-test" aria-label="Test your game"><svg class="i fill"><use href="#i-play"/></svg><span>Test</span></button>
+  </header>
+  <div class="st-body" id="st-body">
+    <aside class="st-left st-panel" id="st-left" aria-label="Insert">
+      <div class="st-ph"><h2>Insert</h2><button class="icon-btn st-close" data-drawer-close aria-label="Close"><svg class="i"><use href="#i-close"/></svg></button></div>
+      <div class="tabs st-tabs" role="tablist" aria-label="Insert categories">
+        <button role="tab" aria-selected="true" data-cat="parts">Parts</button>
+        <button role="tab" aria-selected="false" data-cat="gameplay">Gameplay</button>
+        <button role="tab" aria-selected="false" data-cat="scenery">Scenery</button>
+      </div>
+      <div class="st-insert" id="st-insert" role="tabpanel"></div>
+      <p class="help st-tip">New parts drop where the middle of the view points. Tip: select a part and press Duplicate to copy it.</p>
+    </aside>
+    <div class="st-stage">
+      <div class="st-view" id="st-view"></div>
+      <div class="st-tools" role="toolbar" aria-label="Tools">
+        <button class="tool" data-tool="select" aria-pressed="true" aria-label="Select (1)" title="Select (1)"><svg class="i"><use href="#i-cursor"/></svg></button>
+        <button class="tool" data-tool="move" aria-pressed="false" aria-label="Move (2)" title="Move (2)"><svg class="i"><use href="#i-move"/></svg></button>
+        <button class="tool" data-tool="rotate" aria-pressed="false" aria-label="Rotate (3)" title="Rotate (3)"><svg class="i"><use href="#i-rotate"/></svg></button>
+        <button class="tool" data-tool="scale" aria-pressed="false" aria-label="Resize (4)" title="Resize (4)"><svg class="i"><use href="#i-scale"/></svg></button>
+        <span class="tool-sep" aria-hidden="true"></span>
+        <button class="tool st-snap" id="st-snap" aria-pressed="true" aria-label="Snap to grid" title="Snap to grid (G)"><svg class="i"><use href="#i-grid"/></svg><span id="st-snap-v">1</span></button>
+      </div>
+      <div class="st-sel-bar" id="st-sel-bar" hidden>
+        <span id="st-sel-name"></span>
+        <button class="btn btn-sm" id="st-dup"><svg class="i"><use href="#i-copy"/></svg>Duplicate</button>
+        <button class="btn btn-sm btn-danger" id="st-del"><svg class="i"><use href="#i-trash"/></svg>Delete</button>
+      </div>
+      <div class="stage-hint st-hint" id="st-hint">Drag to look around · scroll or pinch to zoom · tap a part to select it</div>
+      <nav class="st-dock" aria-label="Studio panels">
+        <button class="btn" data-drawer="st-left"><svg class="i"><use href="#i-plus"/></svg>Insert</button>
+        <button class="btn" data-drawer="st-right" data-pane="explorer"><svg class="i"><use href="#i-layers"/></svg>Explorer</button>
+        <button class="btn" data-drawer="st-right" data-pane="props"><svg class="i"><use href="#i-sliders"/></svg>Properties</button>
+      </nav>
+    </div>
+    <aside class="st-right st-panel" id="st-right" aria-label="Explorer and properties">
+      <div class="st-ph"><h2>Explorer</h2><span class="st-count" id="st-count"></span><button class="icon-btn st-close" data-drawer-close aria-label="Close"><svg class="i"><use href="#i-close"/></svg></button></div>
+      <div class="st-ex-acts">
+        <button class="btn btn-sm" id="st-group" disabled><svg class="i"><use href="#i-folder"/></svg>Group</button>
+        <button class="btn btn-sm" id="st-ungroup" disabled>Ungroup</button>
+        <button class="btn btn-sm" id="st-dup2" disabled><svg class="i"><use href="#i-copy"/></svg>Duplicate</button>
+        <button class="icon-btn" id="st-del2" aria-label="Delete selected" disabled><svg class="i"><use href="#i-trash"/></svg></button>
+      </div>
+      <div class="st-list" id="st-list" role="listbox" aria-label="Parts in your game" aria-multiselectable="true"></div>
+      <div class="st-ph st-ph2" id="st-props-head"><h2>Properties</h2></div>
+      <div class="st-props" id="st-props"></div>
+    </aside>
+  </div>
+</section>
+
+<div class="modal" id="st-game-modal" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sg-title">
+    <div class="sheet-head"><h2 id="sg-title">Game settings</h2><button class="icon-btn" data-close aria-label="Close"><svg class="i"><use href="#i-close"/></svg></button></div>
+    <div class="field"><label for="sg-name"><b>Name</b></label><input class="text-input" id="sg-name" maxlength="40" autocomplete="off"></div>
+    <div class="field"><label for="sg-desc"><b>Description</b> <span class="help">Shown on your game's page</span></label><textarea class="text-input" id="sg-desc" maxlength="200" rows="3"></textarea></div>
+    <div class="field"><label for="sg-sky"><b>Sky</b></label><select class="text-input" id="sg-sky"></select></div>
+    <div class="field"><label for="sg-grav"><b>Gravity</b> <span class="set-val" id="sg-grav-v">100%</span></label><input type="range" id="sg-grav" min="0.2" max="1.6" step="0.05"></div>
+    <div class="field"><label for="sg-mode"><b>Rules</b></label><select class="text-input" id="sg-mode"></select><p class="help" id="sg-mode-help"></p></div>
+    <div class="st-two">
+      <div class="field"><label for="sg-time"><b>Time limit</b> <span class="help">seconds, 0 = none</span></label><input class="text-input" type="number" id="sg-time" min="0" max="3600" step="5"></div>
+      <div class="field"><label for="sg-kill"><b>Fall height</b> <span class="help">players below this respawn</span></label><input class="text-input" type="number" id="sg-kill" min="-500" max="100" step="1"></div>
+    </div>
+    <hr>
+    <div class="btn-row">
+      <button class="btn" id="sg-download" hidden><svg class="i"><use href="#i-download"/></svg>Download game file</button>
+      <button class="btn btn-danger" id="sg-delete"><svg class="i"><use href="#i-trash"/></svg>Delete game</button>
+    </div>
+  </div>
+</div>

@@ -213,10 +213,11 @@ const World = {
     const c = b.getCenter(new THREE.Vector3()), r = Math.max(12, b.getSize(new THREE.Vector3()).length() * 0.5);
     return { pos: [c.x + r * 0.95, c.y + r * 0.7, c.z + r * 0.95], look: [c.x, c.y, c.z] };
   },
-  snapshot(w, h) {
-    const r = Engine.renderer, tc = this.thumbCam(), cam = new THREE.PerspectiveCamera(50, w / h, 0.1, 1200);
-    cam.position.set(...tc.pos); cam.lookAt(...tc.look);
-    this.update(0, new THREE.Vector3(...tc.look), cam);
+  // A jpeg data URL of the level. viewCam (optional) shoots from that camera instead of the thumbnail framing.
+  snapshot(w, h, viewCam, focus) {
+    const r = Engine.renderer, tc = viewCam ? null : this.thumbCam(), cam = viewCam ? viewCam.clone() : new THREE.PerspectiveCamera(50, w / h, 0.1, 1200);
+    if (viewCam) { cam.aspect = w / h; cam.updateProjectionMatrix(); } else { cam.position.set(...tc.pos); cam.lookAt(...tc.look); }
+    this.update(0, focus || (tc ? new THREE.Vector3(...tc.look) : cam.position), cam);
     const pr = r.getPixelRatio(), size = r.getSize(new THREE.Vector2());
     r.setPixelRatio(1); r.setSize(w, h, false); r.render(this.scene, cam);
     let url = '';

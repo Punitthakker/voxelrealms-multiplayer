@@ -21,8 +21,8 @@ def main():
     ap.add_argument('--out', default=os.path.join(HERE, 'playforge.html'))
     ap.add_argument('--src', default=os.path.join(HERE, 'src'))
     ap.add_argument('--three', default=THREE, help='three.js URL (tests point this at a local copy)')
-    ap.add_argument('--skip', nargs='*', default=[], help='source files to leave out')
-    ap.add_argument('--extra', nargs='*', default=[], help='extra source folders; same-named files replace src/ files')
+    ap.add_argument('--skip', nargs='*', action='extend', default=[], help='source files to leave out')
+    ap.add_argument('--extra', nargs='*', action='extend', default=[], help='extra source folders; same-named files replace src/ files')
     a = ap.parse_args()
     where = {f: a.src for f in os.listdir(a.src)}
     for d in a.extra:
