@@ -81,7 +81,8 @@ const Library = {
       parts: this.compact(doc.parts || []), spawn: doc.spawn || null, spawnYaw: Number.isFinite(doc.spawnYaw) ? doc.spawnYaw : null, updatedAt: now,
     };
     await db.doc('games/' + uid + '/data/' + doc.id).set(full);
-    games[doc.id] = { id: doc.id, title, desc, thumb: typeof thumb === 'string' && thumb.length < 24000 ? thumb : '', mode: full.mode, sky: (full.env && full.env.sky) || 'day', parts: full.parts.length, createdAt: (games[doc.id] && games[doc.id].createdAt) || now, updatedAt: now };
+    const by = WordFilter.clean(String(Profile.displayName() || '').trim().slice(0, 40));
+    games[doc.id] = { id: doc.id, title, desc, by, thumb: typeof thumb === 'string' && thumb.length < 24000 ? thumb : '', mode: full.mode, sky: (full.env && full.env.sky) || 'day', parts: full.parts.length, createdAt: (games[doc.id] && games[doc.id].createdAt) || now, updatedAt: now };
     await sumRef.set({ v: 1, games });
     doc.publishedAt = now; doc.title = title; doc.desc = desc; this.saveDraft(doc);
     return 'cloud';
@@ -136,7 +137,8 @@ const Library = {
           const data = d.data(); if (!data || !data.games || typeof data.games !== 'object' || !ID_RE.test(d.id)) continue;
           for (const g of Object.values(data.games)) {
             if (!g || typeof g.id !== 'string' || !GAME_ID_RE.test(g.id)) continue;
-            list.push({ id: g.id, title: String(g.title || 'Untitled game').slice(0, GAME_LIMITS.title), desc: String(g.desc || '').slice(0, GAME_LIMITS.desc), thumb: typeof g.thumb === 'string' && g.thumb.startsWith('data:image/') ? g.thumb : '', mode: g.mode, sky: g.sky, parts: g.parts, createdAt: Number(g.createdAt) || 0, updatedAt: Number(g.updatedAt) || 0, creatorId: d.id });
+            const by = typeof g.by === 'string' ? WordFilter.clean(g.by.trim().slice(0, 40)) : '';
+            list.push({ id: g.id, title: String(g.title || 'Untitled game').slice(0, GAME_LIMITS.title), desc: String(g.desc || '').slice(0, GAME_LIMITS.desc), creatorName: by, thumb: typeof g.thumb === 'string' && g.thumb.startsWith('data:image/') ? g.thumb : '', mode: g.mode, sky: g.sky, parts: g.parts, createdAt: Number(g.createdAt) || 0, updatedAt: Number(g.updatedAt) || 0, creatorId: d.id });
           }
         }
         this.published = list; this.ready = true; this.emit();

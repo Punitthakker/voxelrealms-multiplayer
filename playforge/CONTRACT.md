@@ -187,15 +187,25 @@ Solo (no room) works the same: you are the host and acts arrive locally.
 
 ## Content rules
 
-- Original names and art only. Do not use Roblox names or the names of Roblox experiences (no "Rivals",
-  no "99 Nights in the Forest", no "Doors", "Adopt Me", "Brookhaven", "Tower of Hell", …). Generic genre words are
-  fine inside an original title.
+- Original names and art only. Never reuse the exact title, logo or look of a Roblox experience (no "RIVALS",
+  "99 Nights in the Forest", "Doors", "Adopt Me", "Brookhaven", "Tower of Hell", …). A game inspired by a genre gets
+  its own title, e.g. "Splat Rivals" (foam-blaster duel) or "99 Nights at Pinewood" (campfire survival).
 - Kid-friendly: blasters shoot foam, paint, snowballs or light; defeated players "splat" or "pop", never blood or gore.
   Night creatures are spooky shapes, not graphic.
 - Copy is plain and direct. Buttons say what they do. No emoji in UI text.
 - Every game must be playable solo on a phone with the joystick, jump button and your action buttons.
 - Performance budget per game on a mid-range phone: < 600 parts, ≤ 6 bots, ≤ 3 extra lights, no per-frame allocation
   in hot loops where avoidable, no per-frame DOM writes unless the value changed (Hud.stat already caches).
+
+## Studio (`76-studio.js`)
+
+`Studio.newGame()`, `Studio.open(draftDoc)`, `Studio.remix(def)` open the editor; leaving saves the draft (with a
+jpeg thumbnail in `doc.thumb`) and calls `Home.onReturn()`. The doc is a Library draft: `{id, title, desc, mode,
+modeOpts, env, killY, spawnYaw, parts}` where `parts` holds parts and group nodes `{id, name, shape: 'group'}`;
+a part joins a group with `parent`. Studio adds the doc's own part objects to the world (edit mode: no colliders,
+nothing moves), so a change is "edit the object, then `World.refreshPart(p)`". Every change goes through
+`Studio.edit(label, ids, fn)` (or `beginEdit`/`endEdit` for drags) so undo/redo can restore exact snapshots.
+Test runs `Game.enter(Library.toDef(doc), {test: true, onExit})`.
 
 ## File ownership
 

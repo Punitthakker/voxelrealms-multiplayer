@@ -14,7 +14,11 @@
         <svg aria-hidden="true"><use href="#pf-mark"/></svg>
         <span class="wordmark">Play<b>Forge</b></span>
       </div>
-      <div class="grow"></div>
+      <form class="home-search" id="home-search" role="search" autocomplete="off">
+        <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
+        <input type="search" id="home-q" placeholder="Search games, creators, kinds" aria-label="Search games" enterkeyhint="search" spellcheck="false" autocapitalize="off" maxlength="60">
+        <button type="button" class="hs-clear" id="home-q-clear" aria-label="Clear search" hidden><svg class="i"><use href="#i-close"/></svg></button>
+      </form>
       <button class="me-chip" id="home-me" aria-label="Edit your avatar">
         <canvas id="home-me-head" class="px" width="8" height="8"></canvas>
         <span id="home-me-name">Player</span>
@@ -22,42 +26,35 @@
       <button class="icon-btn" id="home-settings" aria-label="Settings"><svg class="i"><use href="#i-sliders"/></svg></button>
     </header>
 
-    <section class="player-card" aria-labelledby="pc-name">
-      <canvas id="home-fig" class="px fig" width="16" height="32" aria-hidden="true"></canvas>
-      <div>
+    <section class="player-card" id="home-card" aria-labelledby="pc-name">
+      <span class="pc-fig" aria-hidden="true"><canvas id="home-fig" class="px fig" width="16" height="32"></canvas></span>
+      <div class="pc-info">
         <h1 id="pc-name">Player</h1>
         <p id="pc-status">Loading your profile…</p>
-        <div class="row">
-          <button class="btn btn-ember" id="pc-edit"><svg class="i"><use href="#i-pencil"/></svg>Edit avatar</button>
-          <button class="btn" id="pc-play"><svg class="i fill"><use href="#i-play"/></svg>Play Forge Park</button>
-        </div>
+      </div>
+      <div class="pc-acts">
+        <button class="btn" id="pc-edit"><svg class="i"><use href="#i-pencil"/></svg>Edit avatar</button>
+        <button class="btn btn-ember" id="pc-make"><svg class="i"><use href="#i-plus"/></svg>Make a game</button>
       </div>
     </section>
 
-    <section class="shelf" aria-labelledby="sh-mine">
-      <div class="shelf-head"><h2 id="sh-mine">Your shelf</h2><small>Your games and the ones friends export</small></div>
-      <div class="tile-row" id="row-mine">
-        <button class="plus-tile" id="tile-plus" aria-label="Create a new game">
-          <span class="plus"><svg class="i"><use href="#i-plus"/></svg></span>New game
-        </button>
+    <div class="home-rows" id="home-rows"></div>
+
+    <section class="home-results" id="home-results" aria-labelledby="hr-title" hidden>
+      <div class="hr-head">
+        <button class="icon-btn" id="hr-back" aria-label="Back to all games"><svg class="i"><use href="#i-back"/></svg></button>
+        <div class="hr-text"><h2 id="hr-title">Search results</h2><small id="hr-count" aria-live="polite"></small></div>
+      </div>
+      <div class="tile-grid" id="hr-grid"></div>
+      <div class="hr-empty" id="hr-empty" hidden>
+        <span class="hr-empty-ic"><svg class="i"><use href="#i-search"/></svg></span>
+        <strong id="hr-empty-title">No games match</strong>
+        <p>Check the spelling or try a shorter word. Or make the game yourself.</p>
+        <button class="btn btn-ember" id="hr-make"><svg class="i"><use href="#i-plus"/></svg>Make a game</button>
       </div>
     </section>
 
-    <section class="shelf" aria-labelledby="sh-pop">
-      <div class="shelf-head"><h2 id="sh-pop">Popular</h2><small>Ranked by likes</small></div>
-      <div class="tile-row" id="row-pop">
-        <div class="empty-card empty-wide"><strong>No shared games yet</strong>When people export games from Studio, the most-liked ones show up here.</div>
-      </div>
-    </section>
-
-    <section class="shelf" aria-labelledby="sh-new">
-      <div class="shelf-head"><h2 id="sh-new">New</h2><small>Fresh exports, newest first</small></div>
-      <div class="tile-row" id="row-new">
-        <div class="empty-card empty-wide"><strong>Nothing new yet</strong>Freshly exported games land here first. Make one with the + tile.</div>
-      </div>
-    </section>
-
-    <p class="home-foot">PlayForge build 0.2 · Engine, avatar and multiplayer</p>
+    <p class="home-foot">PlayForge build 0.3 · 52 games, Studio and multiplayer</p>
   </div>
 </section>
 
@@ -226,12 +223,26 @@
 </div>
 
 <div class="modal" id="gamepage-modal" hidden>
-  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="gp-title">
-    <div class="sheet-head"><h2 id="gp-title">Forge Park</h2><button class="icon-btn" data-close aria-label="Close"><svg class="i"><use href="#i-close"/></svg></button></div>
-    <div class="gp-thumb"><img id="gp-img" alt=""></div>
-    <div class="gp-meta"><span><svg class="i"><use href="#i-person"/></svg><span id="gp-creator">PlayForge</span></span><span><span class="dot-online"></span><span id="gp-online">Solo</span></span></div>
-    <p id="gp-desc"></p>
-    <button class="btn btn-ember" id="gp-play"><svg class="i fill"><use href="#i-play"/></svg>Play</button>
+  <div class="sheet gp-sheet" role="dialog" aria-modal="true" aria-labelledby="gp-title">
+    <div class="gp-art" id="gp-art">
+      <button class="gp-close" data-close aria-label="Close"><svg class="i"><use href="#i-close"/></svg></button>
+    </div>
+    <div class="gp-body">
+      <div class="gp-chips" id="gp-chips"></div>
+      <h2 id="gp-title">Game</h2>
+      <div class="gp-meta">
+        <span><svg class="i"><use href="#i-person"/></svg><span id="gp-creator">PlayForge</span></span>
+        <span id="gp-online-wrap"><span class="dot-online"></span><span id="gp-online">Solo</span></span>
+        <span id="gp-likes-wrap" hidden><svg class="i"><use href="#i-heart"/></svg><span id="gp-likes">0 likes</span></span>
+        <span id="gp-edited-wrap" hidden><svg class="i"><use href="#i-clock"/></svg><span id="gp-edited"></span></span>
+      </div>
+      <p class="gp-desc" id="gp-desc"></p>
+      <div class="gp-actions">
+        <button class="btn btn-ember gp-play" id="gp-play" data-autofocus><svg class="i fill"><use href="#i-play"/></svg><span id="gp-play-label">Play</span></button>
+        <div class="gp-more" id="gp-more"></div>
+        <p class="help gp-note" id="gp-note" hidden></p>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -251,6 +262,18 @@
     <p id="ch-body"></p>
     <div class="choice-btns" id="ch-btns"></div>
   </div>
+</div>
+
+<div class="modal" id="text-modal" hidden>
+  <form class="sheet" id="tx-form" role="dialog" aria-modal="true" aria-labelledby="tx-title" autocomplete="off">
+    <div class="sheet-head"><h2 id="tx-title">Rename game</h2><button type="button" class="icon-btn" data-close aria-label="Close"><svg class="i"><use href="#i-close"/></svg></button></div>
+    <div class="field">
+      <label for="tx-input"><b id="tx-label">Game name</b></label>
+      <input class="text-input" id="tx-input" maxlength="40" spellcheck="false" enterkeyhint="done" data-autofocus>
+      <p class="help tx-help"><span id="tx-help"></span><span class="tx-count" id="tx-count" aria-hidden="true">0/40</span></p>
+    </div>
+    <div class="choice-btns"><button type="button" class="btn" data-close>Cancel</button><button type="submit" class="btn btn-ember" id="tx-ok">Save</button></div>
+  </form>
 </div>
 
 <div id="toast" role="status" aria-live="polite"></div>
