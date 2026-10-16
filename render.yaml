@@ -1,4 +1,4 @@
-# Render blueprint: one free web service running server.js (Next + API + WebSocket).
+# Render blueprint: one free web service running server.js (Next + APIs + WebSockets for PlayForge and Voxel Realms).
 # MONGODB_URI is asked for on first deploy; paste the MongoDB Atlas connection string.
 services:
   - type: web
