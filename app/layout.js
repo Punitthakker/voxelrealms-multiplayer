@@ -1,6 +1,6 @@
 export const metadata = {
-  title: 'Voxel Realms',
-  description: 'A multiplayer browser voxel sandbox.',
+  title: { default: 'PlayForge', template: '%s' },
+  description: 'Play, build and share 3D games in your browser.',
 };
 
 export const viewport = {
@@ -15,7 +15,11 @@ export default function RootLayout({ children }) {
     <html lang="en">
       <head>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@700&display=swap" rel="stylesheet" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
+        <link
+          href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=JetBrains+Mono:wght@500;700&family=Lilita+One&family=Silkscreen:wght@700&display=swap"
+          rel="stylesheet"
+        />
       </head>
       <body>{children}</body>
     </html>

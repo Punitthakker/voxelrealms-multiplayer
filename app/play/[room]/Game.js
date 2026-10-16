@@ -52,7 +52,7 @@ export default function Game({ room }) {
         {stage === 'checking' && <p>Finding world {room}…</p>}
         {stage === 'missing' && <>
           <p>World <b>{room}</b> doesn&apos;t exist or the server can&apos;t be reached.</p>
-          <a className="big" style={{ display: 'block', textDecoration: 'none' }} href="/">Back to lobby</a>
+          <a className="big" style={{ display: 'block', textDecoration: 'none' }} href="/voxel">Back to lobby</a>
         </>}
         {stage === 'needName' && <form onSubmit={e => {
           e.preventDefault();
