@@ -58,3 +58,8 @@ export const gameStore = createStore({
   active: false, loading: false, loadingTitle: '', title: '', test: false, hint: '', hintVisible: false,
   menuOpen: false, fps: '', mp: false, chatOpen: false,
 });
+
+// PlayForge server status, written by playforge/client/platform.js: ready = start-up finished (online or not),
+// online = the server answered (sessions, publishing, likes), connected = the live socket is up (rooms),
+// user = {id, name, nick} | null. Published games and likes are in libraryStore (library.js).
+export const platformStore = createStore({ ready: false, online: false, connected: false, user: null });

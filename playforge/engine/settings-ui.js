@@ -1,29 +1,47 @@
-import { $, $$, Modals, PRESETS, Settings, Sfx, saveSettings } from './core.js';
+import { PRESETS, Settings, Sfx, clamp, saveSettings } from './core.js';
 import { Engine } from './render.js';
+import { createStore, gameStore } from './stores.js';
 
-/* ---------- 13b. Settings sheet ---------- */
-export function syncSettingsUI() {
-  $$('#set-preset [data-preset]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.preset === Settings.preset)));
-  $('#preset-help').textContent = PRESETS[Settings.preset].help;
-  $('#set-dynres').checked = Settings.dynamicRes; $('#set-fps').checked = Settings.showFps; $('#set-invert').checked = Settings.invertY;
-  $('#set-bubbles').checked = Settings.bubbles;
-  $('#set-vol').value = Settings.volume; $('#set-vol-v').textContent = String(Settings.volume);
-  $('#set-sens').value = Settings.sensitivity; $('#set-sens-v').textContent = Number(Settings.sensitivity).toFixed(1) + '×';
-}
-export function openSettings() { syncSettingsUI(); Modals.open($('#settings-modal')); }
-export function bindSettings() {
-  $('#set-preset').addEventListener('click', e => {
-    const b = e.target.closest('[data-preset]'); if (!b || b.dataset.preset === Settings.preset) return;
-    Settings.preset = b.dataset.preset; saveSettings(); syncSettingsUI(); Engine.applyPreset(); Sfx.play('click');
-  });
-  $('#set-dynres').addEventListener('change', e => { Settings.dynamicRes = e.target.checked; saveSettings(); Engine.dynScale = 1; Engine.applyPixelRatio(); });
-  $('#set-fps').addEventListener('change', e => { Settings.showFps = e.target.checked; saveSettings(); $('#hud-fps').hidden = !Settings.showFps; });
-  $('#set-invert').addEventListener('change', e => { Settings.invertY = e.target.checked; saveSettings(); });
-  $('#set-bubbles').addEventListener('change', e => { Settings.bubbles = e.target.checked; saveSettings(); });
-  const vol = $('#set-vol');
-  vol.addEventListener('input', () => { Settings.volume = +vol.value; $('#set-vol-v').textContent = vol.value; Sfx.setVolume(Settings.volume); });
-  vol.addEventListener('change', () => { saveSettings(); Sfx.play('click'); });
-  const sens = $('#set-sens');
-  sens.addEventListener('input', () => { Settings.sensitivity = +sens.value; $('#set-sens-v').textContent = Number(sens.value).toFixed(1) + '×'; });
-  sens.addEventListener('change', saveSettings);
+/* ---------- 13b. Settings: what the settings sheet shows, and how a change takes effect ---------- */
+// components/playforge/settings/SettingsModal.js renders settingsStore and calls applySetting(key, value).
+// openSettings() / closeSettings() drive the sheet from anywhere (game menu, home).
+export const PRESET_KEYS = ['low', 'medium', 'high'];
+const snapshot = () => ({
+  preset: Settings.preset, dynamicRes: !!Settings.dynamicRes, showFps: !!Settings.showFps, volume: clamp(Number(Settings.volume) || 0, 0, 100),
+  sensitivity: clamp(Number(Settings.sensitivity) || 1, 0.2, 2), invertY: !!Settings.invertY, bubbles: !!Settings.bubbles,
+});
+export const settingsStore = createStore(Object.assign({ open: false }, snapshot()));
+export function openSettings() { settingsStore.set({ open: true }); }
+export function closeSettings() { settingsStore.set({ open: false }); }
+export const presetHelp = key => (PRESETS[key] ? PRESETS[key].help : '');
+
+// Applies one setting right away and saves it on this device.
+export function applySetting(key, value) {
+  switch (key) {
+    case 'preset':
+      if (!PRESETS[value] || value === Settings.preset) return;
+      Settings.preset = value; saveSettings(); Engine.applyPreset(); Sfx.play('click');
+      break;
+    case 'dynamicRes':
+      Settings.dynamicRes = !!value; saveSettings(); Engine.dynScale = 1; Engine.applyPixelRatio();
+      break;
+    case 'showFps':
+      Settings.showFps = !!value; saveSettings(); gameStore.set({ fps: '' }); // the game loop fills it in every second
+      break;
+    case 'invertY': case 'bubbles':
+      Settings[key] = !!value; saveSettings();
+      break;
+    case 'volume': {
+      const v = clamp(Math.round(Number(value) || 0), 0, 100); if (v === Settings.volume) return;
+      Settings.volume = v; Sfx.setVolume(v); saveSettings();
+      break;
+    }
+    case 'sensitivity': {
+      const v = clamp(Math.round((Number(value) || 1) * 10) / 10, 0.2, 2); if (v === Settings.sensitivity) return;
+      Settings.sensitivity = v; saveSettings();
+      break;
+    }
+    default: return;
+  }
+  settingsStore.set(snapshot());
 }

@@ -1,16 +1,24 @@
-import { $, Caps, IS_TOUCH, LS, Me, Modals, Profile, SK, STARTERS, Settings, Sfx, WordFilter, clamp, ctx2d, defaultStarterIndex, drawHead, drawPngTo, hashStr, lerp, newSkinCanvas, toast, validPng } from './core.js';
+import { Caps, IS_TOUCH, LS, Me, Profile, SK, STARTERS, Settings, Sfx, WordFilter, clamp, ctx2d, defaultStarterIndex, drawPngTo, hashStr, lerp, newSkinCanvas, toast, validPng } from './core.js';
+import { createStore, gameStore, platformStore } from './stores.js';
 import { Engine } from './render.js';
 import { createAvatar, makeSkinTexture } from './avatar.js';
 import { Phys } from './physics.js';
 import { World } from './world.js';
-import { Input } from './input.js';
 import { Game, callMode } from './game.js';
 import { STARTER_CANVASES, Skins } from './skins.js';
-import { Home } from './home.js';
 
 /* ---------- 14b. Multiplayer: game rooms, presence, chat, players ---------- */
+// No DOM in here. Net keeps the room logic (presence, interpolation, host election, Shared state and acts) and
+// writes what the screen shows into two stores:
+//   netStore   the game room: chat lines, unread count, players list, connection state (components/playforge/game)
+//   lobbyStore "N online" per game, from everyone's lobby presence (the home screen)
+// React calls back with Net.send, Net.setChatOpen, Net.focusChat, Net.toggleMute, Net.reportTarget, Net.sendReport.
 export const MAX_PLAYERS = 10, CHAT_MAX = 150, CHAT_KEEP = 50, INTERP_MS = 140;
+// After our own connection dropped, players missing from the room are kept this long in case they are only
+// reconnecting too (a server restart gives everyone a new peer id). Covers the client's reconnect back-off.
+const GHOST_MS = 20000;
 export const NAME_COLORS = ['#FFB38A', '#FFD86B', '#8FE3C0', '#9CC2FF', '#D9B8FF', '#FF9EB5', '#A7F07A', '#7FE7F2'];
+export const MY_COLOR = '#FF9F6E';
 export const REPORT_REASONS = [['language', 'Bad language'], ['bullying', 'Bullying or being mean'], ['name', 'Inappropriate name or skin'], ['cheating', 'Cheating or griefing'], ['other', 'Something else']];
 export const ID_RE = /^[A-Za-z0-9_\-.~:@+]{1,120}$/;
 export const r2 = v => Math.round(v * 100) / 100;
@@ -21,50 +29,84 @@ export function cleanNick(v) {
   v = v.replace(/\s+/g, ' ').trim();
   return /^[A-Za-z0-9 _.-]{3,20}$/.test(v) && !WordFilter.hasBad(v) ? v : '';
 }
+// Account names come from the server; keep them short and filtered all the same.
+const cleanName = v => (typeof v === 'string' ? WordFilter.clean(v.replace(/\s+/g, ' ').trim().slice(0, 40)) : '');
 export const colorFor = key => NAME_COLORS[hashStr(String(key)) % NAME_COLORS.length];
+
+//   inRoom: joined a game room (chat button, players list)    phase: 'off' | 'connecting' | 'live' | 'solo'
+//   lines: [{id, key, name, text, color, mine, system}]        players: [{id, key, me, name, host, guest, sameUser, muted, skin, ver}]
+export const netStore = createStore({
+  inRoom: false, phase: 'off', status: '', lines: [], unread: 0, chatOpen: false, canChat: true, note: '', focusSeq: 0,
+  players: [], count: 'Solo', empty: '', canReport: false, mutes: [],
+});
+//   live: the lobby is connected    counts: {gameId: players in that game right now}
+export const lobbyStore = createStore({ live: false, counts: {} });
+
+// Platform helpers the platform layer (playforge/client/platform.js) puts on Caps; the engine runs without them:
+//   Caps.players {getPlayer(id) -> {id, name, nick, skin} | null, onPlayerChanged(fn(id)) -> unsubscribe}
+//   Caps.report({target, targetNick, game, reason, note, recent})
+// Without them other players wear starter skins and the Report button stays hidden.
+function playerDirectory() {
+  const c = Caps.players;
+  return c && typeof c.getPlayer === 'function' ? c : null;
+}
+// The lobby room (everyone with PlayForge open), once the platform layer has started. Null without one: solo play.
+async function lobbyRoom() {
+  if (Caps.room) return Caps.room;
+  if (Caps.roomP && typeof Caps.roomP.then === 'function') {
+    try { return (await Caps.roomP) || Caps.room || null; } catch (e) { return null; }
+  }
+  const t0 = Date.now();
+  while (!Caps.ready && !Caps.room && Date.now() - t0 < 15000) await new Promise(r => setTimeout(r, 120));
+  return Caps.room || null;
+}
 
 // Another player's avatar in this game room.
 export class Remote {
   constructor(p) {
     this.peer = p.peer; this.by = p.by && ID_RE.test(p.by) ? p.by : null; this.guest = !!p.guest; this.sameUser = !!p.isMe;
-    this.canvas = newSkinCanvas(); this.tex = makeSkinTexture(this.canvas); this.skinFromDb = false; this.st = -1;
-    this.nick = ''; this.dbNick = ''; this.displayName = 'Player'; this.jt = Infinity; this.lastChat = 0; this.recent = [];
-    this.samples = []; this.off = null; this.lastPr = null; this.t = 0; this.unsubDb = null;
+    this.canvas = newSkinCanvas(); this.tex = makeSkinTexture(this.canvas); this.skinFromDb = false; this.st = -1; this.skinVer = 0;
+    this.nick = ''; this.dbNick = ''; this.dbName = ''; this.pnm = ''; this.displayName = 'Player'; this.jt = Infinity; this.lastChat = 0; this.recent = [];
+    this.samples = []; this.off = null; this.lastPr = null; this.t = 0; this.loadSeq = 0; this.disposed = false;
     this.sc = 0; this.x = null; this.gs = null; this.gsn = -1; this.lastAct = -1;
-    this.avatar = createAvatar(this.tex, 'Player'); this.avatar.root.visible = false; World.scene.add(this.avatar.root);
+    this.avatar = createAvatar(this.tex, 'Player'); this.avatar.root.visible = false; if (World.scene) World.scene.add(this.avatar.root);
     this.setStarter(hashStr(this.peer) % STARTERS.length);
-    if (this.by) this.subscribeDb();
+    this.ready = this.by ? this.loadProfile() : Promise.resolve();
     this.refreshName();
   }
   get key() { return this.by || 'peer:' + this.peer; }
   setStarter(i) {
-    if (this.skinFromDb || i === this.st) return;
+    if (this.skinFromDb || i === this.st || !STARTER_CANVASES[i]) return;
     this.st = i; const g = ctx2d(this.canvas); g.clearRect(0, 0, SK, SK); g.drawImage(STARTER_CANVASES[i], 0, 0); this.tex.needsUpdate = true;
+    this.skinVer++; Net.playersDirty();
   }
-  // Their saved skin and name live in players/<id>; this stays live while they are here.
-  subscribeDb() {
-    const db = Caps.db; if (!db || !this.by || this.unsubDb) return;
-    try {
-      this.unsubDb = db.doc('players/' + this.by).onSnapshot(snap => {
-        const d = snap.exists ? snap.data() : null;
-        if (d && validPng(d.skin)) drawPngTo(this.canvas, d.skin).then(ok => { if (ok) { this.skinFromDb = true; this.tex.needsUpdate = true; Net.playersDirty(); } });
-        const n = d ? cleanNick(d.nick) : '';
-        if (n !== this.dbNick) { this.dbNick = n; this.refreshName(); }
-      }, () => { /* keep the starter skin */ });
-    } catch (e) { this.unsubDb = null; }
+  // Their saved skin and name come from the server's player directory. Net reloads them when they save a change.
+  async loadProfile() {
+    if (!this.by || this.disposed) return;
+    const seq = ++this.loadSeq;
+    let d = null;
+    try { const dir = playerDirectory(); if (!dir) return; d = await dir.getPlayer(this.by); }
+    catch (e) { return; } // keep the starter skin
+    if (seq !== this.loadSeq || this.disposed || !d) return;
+    if (validPng(d.skin)) {
+      if (await drawPngTo(this.canvas, d.skin) && !this.disposed) { this.skinFromDb = true; this.tex.needsUpdate = true; this.skinVer++; }
+    } else if (this.skinFromDb) {
+      this.skinFromDb = false; const st = this.st; this.st = -1; this.setStarter(st >= 0 ? st : hashStr(this.peer) % STARTERS.length);
+    }
+    this.dbNick = cleanNick(d.nick); this.dbName = cleanName(d.name);
+    this.refreshName(); Net.playersDirty();
   }
-  async refreshName() {
-    let pn = '';
-    if (this.by && Caps.user) { try { const ps = await Caps.user.profiles([this.by]); pn = (ps[this.by] && ps[this.by].name) || ''; } catch (e) { /* unnamed */ } }
-    const n = (this.dbNick || this.nick || pn || 'Player').slice(0, 40);
+  refreshName() {
+    const n = (this.dbNick || this.nick || this.dbName || this.pnm || 'Player').slice(0, 40);
     if (n !== this.displayName) { this.displayName = n; this.avatar.setName(n); Net.playersDirty(); }
     return n;
   }
   onPresence(p) {
     const pr = p.presence || {}; if (pr === this.lastPr) return; this.lastPr = pr;
-    if (!this.by && typeof pr.uid === 'string' && ID_RE.test(pr.uid)) { this.by = pr.uid; this.subscribeDb(); this.refreshName(); }
+    if (!this.by && typeof pr.uid === 'string' && ID_RE.test(pr.uid)) { this.by = pr.uid; this.ready = this.loadProfile(); }
     if (Number.isInteger(pr.st) && pr.st >= 0 && pr.st < STARTERS.length) this.setStarter(pr.st);
     const nk = cleanNick(pr.nk); if (nk !== this.nick) { this.nick = nk; this.refreshName(); }
+    const nm = cleanNick(pr.nm); if (nm !== this.pnm) { this.pnm = nm; this.refreshName(); }
     if (Number.isFinite(pr.jt)) this.jt = pr.jt;
     this.sc = Number.isFinite(pr.sc) ? pr.sc : 0;
     this.x = pr.x && typeof pr.x === 'object' ? pr.x : null;
@@ -102,40 +144,59 @@ export class Remote {
   }
   say(text) { if (Settings.bubbles) this.avatar.say(text); }
   dispose() {
-    if (this.unsubDb) { try { this.unsubDb(); } catch (e) { /* already closed */ } }
-    World.scene.remove(this.avatar.root); this.avatar.dispose(); this.tex.dispose();
+    this.disposed = true; clearTimeout(this.ghostTimer); this.ghostTimer = 0;
+    if (this.avatar.root.parent) this.avatar.root.parent.remove(this.avatar.root);
+    this.avatar.dispose(); this.tex.dispose();
   }
 }
 
 export const Net = {
   lobby: null, room: null, leaving: null, gameId: null, token: 0, joinedAt: 0, jt: 0, remotes: new Map(), myPeer: null, hostPeer: null,
-  lastSendAt: 0, lastSent: null, lines: [], unread: 0, lastChatAt: 0, chatOpen: false, canChat: true, unsubs: [], lobbyPeers: [],
+  lastSendAt: 0, lastSent: null, lines: [], lineSeq: 0, unread: 0, lastChatAt: 0, chatOpen: false, canChat: true, unsubs: [], lobbyPeers: [],
   mutes: new Set((LS.get('pf.v1.mutes', []) || []).filter(k => typeof k === 'string')), dirtyQueued: false, retried: false,
-  discTimer: 0, noteTimer: 0, reportTarget: null, reason: null,
-  init() {
-    const input = $('#chat-input');
-    $('#hud-chat').addEventListener('click', () => { this.setChatOpen(!this.chatOpen); Sfx.play('click'); });
-    $('#chat-close').addEventListener('click', () => this.setChatOpen(false));
-    $('#chat-form').addEventListener('submit', e => { e.preventDefault(); if (this.send(input.value)) { input.value = ''; this.count(); } });
-    input.addEventListener('input', () => this.count());
-    input.addEventListener('focus', () => Input.release());
-    input.addEventListener('keydown', e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); input.blur(); } });
-    $('#rp-send').addEventListener('click', () => this.sendReport());
-    this.count();
+  discTimer: 0, noteTimer: 0, phase: 'off', focusSeq: 0, meVer: 0, started: false, downAt: 0, upAt: 0,
+  // Once, at engine start-up (index.js): connects the lobby when the platform layer has one, and follows profile changes.
+  start() {
+    if (this.started) return; this.started = true;
+    netStore.set({ mutes: [...this.mutes] });
+    Profile.onChange(() => {
+      if (Game.avatar) Game.avatar.setName(Profile.displayName());
+      this.meVer++; this.updateIdentity(); this.playersDirty();
+    });
+    lobbyRoom().then(room => { if (room) this.initLobby(room); });
+    // A game that went solo because the server was away joins its room once the server answers again.
+    let was = platformStore.get().connected;
+    platformStore.subscribe(s => { const now = !!s.connected; if (now && !was) this.rejoinSolo(); was = now; });
   },
+  rejoinSolo() {
+    const gid = this.gameId;
+    if (this.phase !== 'solo' || !gid || this.room || !Game.active || (Game.opts && Game.opts.test) || Engine.mode !== 'game') return;
+    this.join(gid);
+  },
+  title() { return (Game.def && Game.def.title) || (World.def && World.def.title) || 'this game'; },
 
   // ---- lobby: everyone with the page open; used for "N online" on tiles ----
   initLobby(room) {
     if (this.lobby || !room) return; this.lobby = room;
-    try { room.onPeers(ch => { this.lobbyPeers = ch.peers; Home.updateOnline(); }, () => { this.lobbyPeers = []; Home.updateOnline(); }); } catch (e) { /* optional */ }
+    try { room.onPeers(ch => { this.lobbyPeers = (ch && ch.peers) || []; this.publishLobby(); }, () => { this.lobbyPeers = []; this.publishLobby(); }); } catch (e) { /* optional */ }
     this.setLobbyGame(this.gameId);
-    Home.updateOnline();
+    this.publishLobby();
   },
-  setLobbyGame(g) { if (this.lobby) this.lobby.presence({ v: 1, g: g || null }).catch(() => {}); },
+  setLobbyGame(g) { if (this.lobby) Promise.resolve(this.lobby.presence({ v: 1, g: g || null })).catch(() => {}); },
   onlineCount(gameId) {
     const seen = new Set();
     for (const p of this.lobbyPeers) if (p.kind === 'viewer' && p.presence && p.presence.g === gameId) seen.add(p.peer);
     return seen.size;
+  },
+  publishLobby() {
+    const seen = new Set(), counts = {};
+    for (const p of this.lobbyPeers) {
+      const g = p && p.kind === 'viewer' && p.presence && p.presence.g;
+      if (typeof g !== 'string' || seen.has(g + '\n' + p.peer)) continue;
+      seen.add(g + '\n' + p.peer); counts[g] = (counts[g] || 0) + 1;
+    }
+    const prev = lobbyStore.get().counts;
+    lobbyStore.set({ live: true, counts: JSON.stringify(prev) === JSON.stringify(counts) ? prev : counts });
   },
 
   // ---- joining and leaving a game room ----
@@ -143,72 +204,136 @@ export const Net = {
   async join(gameId) {
     this.leave();
     const token = ++this.token; this.gameId = gameId; this.jt = Date.now(); this.joinedAt = performance.now(); this.canChat = true;
-    const lobby = await (Caps.roomP || Promise.resolve(null));
+    this.setPhase('connecting');
+    const lobby = await lobbyRoom();
     await this.leaving; // a quick rejoin must not get back the room that is still closing
-    if (token !== this.token || !lobby) return; // no room capability: play solo, chat stays hidden
+    if (token !== this.token) return;
+    if (!lobby) { this.setPhase('solo'); return; } // no rooms: play solo, chat stays hidden
     this.initLobby(lobby);
+    // The platform already knows the server is unreachable: play solo now; start() joins when it answers.
+    if (Caps.ready && Caps.online === false) { this.setPhase('solo'); return; }
     let r;
     try { r = await lobby.join(gameId); }
-    catch (e) { if (token === this.token) toast('Multiplayer is not available right now, so you are playing solo.'); return; }
-    if (token !== this.token) { r.leave().catch(() => {}); return; }
+    catch (e) {
+      if (token !== this.token) return;
+      this.setPhase('solo');
+      if (e && e.code === 'full') { toast(`${this.title()} is full (${MAX_PLAYERS} players). Try again soon.`, true); Game.leave(); }
+      else toast('Multiplayer is not available right now, so you are playing solo.');
+      return;
+    }
+    if (token !== this.token) { Promise.resolve(r.leave()).catch(() => {}); return; }
     this.room = r; this.setLobbyGame(gameId);
     this.unsubs.push(r.onPeers(ch => this.onPeers(ch), e => this.onRoomLost(e, token)));
     this.unsubs.push(r.on('chat', m => this.onChat(m), () => {}));
-    this.unsubs.push(r.onConnection(c => this.onConnection(c), () => {}));
+    if (typeof r.onConnection === 'function') this.unsubs.push(r.onConnection(c => this.onConnection(c), () => {}));
+    this.watchDirectory(token);
     this.sendPresence(true);
-    $('#hud-chat').hidden = false; $('#game').classList.add('mp');
-    this.system(`You joined ${World.def.title}. Be kind, and never share personal info like your address or school.`);
+    this.setPhase('live');
+    this.system(`You joined ${this.title()}. Be kind, and never share personal info like your address or school.`);
     if (!IS_TOUCH && innerWidth >= 900) this.setChatOpen(true);
     setTimeout(() => { if (token === this.token) this.checkFull(); }, 2500);
   },
+  setPhase(phase) {
+    this.phase = phase; const inRoom = !!this.room;
+    netStore.set({ phase, inRoom, canChat: this.canChat });
+    gameStore.set({ mp: inRoom });
+    this.playersDirty();
+  },
   leave() {
     this.token++;
-    this.unsubs.forEach(u => { try { u(); } catch (e) { /* already closed */ } }); this.unsubs = [];
-    if (this.room) { this.leaving = this.room.leave().catch(() => {}); this.room = null; }
+    this.unsubs.forEach(u => { try { if (typeof u === 'function') u(); } catch (e) { /* already closed */ } }); this.unsubs = [];
+    if (this.room) {
+      const room = this.room; this.room = null;
+      try { this.leaving = Promise.resolve(room.leave()).catch(() => {}); } catch (e) { this.leaving = null; }
+    }
     for (const r of this.remotes.values()) r.dispose();
     this.remotes.clear(); this.lines = []; this.unread = 0; this.myPeer = null; this.hostPeer = null; this.lastSent = null; this.gameId = null; this.score = 0; this.pubJson = 'null';
-    clearTimeout(this.discTimer); $('#chat-status').textContent = ''; $('#chat-note').hidden = true;
-    this.setLobbyGame(null); this.setChatOpen(false); this.renderChat(); this.renderBadge();
-    $('#hud-chat').hidden = true; $('#game').classList.remove('mp');
+    this.downAt = 0; this.upAt = 0;
+    clearTimeout(this.discTimer); clearTimeout(this.noteTimer);
+    this.setLobbyGame(null); this.chatOpen = false; this.canChat = true;
+    netStore.set({ status: '', note: '', lines: [], unread: 0, chatOpen: false });
+    gameStore.set({ chatOpen: false });
+    this.setPhase('off');
   },
   onRoomLost(e, token) {
     if (token !== this.token) return;
     const gid = this.gameId, code = e && e.code;
-    this.leave(); this.gameId = gid;
+    this.leave(); this.gameId = gid; this.setPhase('solo');
     toast('Lost the connection to the game room. You are playing solo.', true);
     if (code !== 'not_permitted' && !this.retried) {
       this.retried = true;
-      setTimeout(() => { if (Engine.mode === 'game' && this.gameId === gid && !this.room) this.join(gid); }, 2000);
+      setTimeout(() => { if (Engine.mode === 'game' && Game.active && this.gameId === gid && !this.room) this.join(gid); }, 2000);
     }
   },
   onConnection(c) {
     clearTimeout(this.discTimer);
-    if (c) $('#chat-status').textContent = '';
-    else this.discTimer = setTimeout(() => { $('#chat-status').textContent = 'Reconnecting…'; }, 2000);
+    if (c) { netStore.set({ status: '' }); if (this.downAt) this.upAt = Date.now(); }
+    else { this.downAt = Date.now(); this.discTimer = setTimeout(() => netStore.set({ status: 'Reconnecting…' }), 2000); }
   },
+  // True from a drop of our connection until GHOST_MS after it came back.
+  recovering() { return !!this.downAt && (this.upAt < this.downAt || Date.now() - this.upAt < GHOST_MS); },
   onPeers(ch) {
-    const settled = performance.now() - this.joinedAt > 2500;
-    for (const p of ch.joined) this.upsert(p, settled);
-    for (const p of ch.updated) this.upsert(p, false);
-    for (const p of ch.left) {
+    const settled = performance.now() - this.joinedAt > 2500, recovering = this.recovering();
+    for (const p of ch.left || []) {
       const r = this.remotes.get(p.peer); if (!r) continue;
-      this.system(`${r.displayName} left`); r.dispose(); this.remotes.delete(p.peer);
+      // Missing after our reconnect: probably reconnecting too. Keep their avatar a moment (see findGhost).
+      if (recovering && r.by) { this.ghost(r); continue; }
+      this.dropRemote(r);
     }
-    this.electHost(settled); this.playersDirty();
+    for (const p of ch.joined || []) this.upsert(p, settled);
+    for (const p of ch.updated || []) this.upsert(p, false);
+    this.electHost(settled && !recovering); this.playersDirty();
+  },
+  dropRemote(r) { this.system(`${r.displayName} left`); r.dispose(); this.remotes.delete(r.peer); },
+  ghost(r) {
+    if (r.ghostTimer) return;
+    r.ghostTimer = setTimeout(() => {
+      r.ghostTimer = 0;
+      if (this.remotes.get(r.peer) !== r) return;
+      this.dropRemote(r); this.electHost(true); this.playersDirty();
+    }, GHOST_MS);
+  },
+  // The same player back under a new peer id: same user and the same join time.
+  findGhost(p) {
+    const jt = p.presence && p.presence.jt;
+    for (const r of this.remotes.values()) if (r.ghostTimer && r.by && r.by === p.by && Number.isFinite(jt) && r.jt === jt) return r;
+    return null;
   },
   upsert(p, announce) {
     if (p.kind !== 'viewer') return;
-    if (p.sameTab) { this.myPeer = p.peer; return; }
+    if (p.sameTab) {
+      // Our own new peer id after a reconnect: if we were the host, we still are.
+      if (this.myPeer && this.myPeer !== p.peer && this.hostPeer === this.myPeer) this.hostPeer = p.peer;
+      this.myPeer = p.peer; return;
+    }
     let r = this.remotes.get(p.peer);
     if (!r) {
+      const g = this.findGhost(p);
+      if (g) {
+        clearTimeout(g.ghostTimer); g.ghostTimer = 0;
+        this.remotes.delete(g.peer); if (this.hostPeer === g.peer) this.hostPeer = p.peer;
+        g.peer = p.peer; this.remotes.set(p.peer, g); g.onPresence(p);
+        return;
+      }
       if (this.remotes.size >= 30) return;
       r = new Remote(p); this.remotes.set(p.peer, r);
       if (announce) {
         const rr = r;
-        Promise.race([rr.refreshName(), new Promise(res => setTimeout(res, 1500))]).then(() => { if (this.remotes.get(rr.peer) === rr) this.system(`${rr.displayName} joined`); });
+        Promise.race([rr.ready, new Promise(res => setTimeout(res, 1500))]).then(() => { if (this.remotes.get(rr.peer) === rr) this.system(`${rr.displayName} joined`); });
       }
     }
     r.onPresence(p);
+  },
+  // Other players' skins and names change while they play (they save in the avatar editor): reload them.
+  watchDirectory(token) {
+    const dir = playerDirectory();
+    if (!dir || typeof dir.onPlayerChanged !== 'function' || token !== this.token) return;
+    const un = dir.onPlayerChanged(x => {
+      const id = typeof x === 'string' ? x : x && x.id;
+      for (const r of this.remotes.values()) if (r.by && r.by === id) r.loadProfile();
+    });
+    if (token !== this.token) { try { if (typeof un === 'function') un(); } catch (e) { /* closed */ } return; }
+    this.unsubs.push(un);
   },
   // The earliest joiner hosts the shared game state; when they leave, the next earliest takes over.
   electHost(announce) {
@@ -223,11 +348,11 @@ export const Net = {
   isHost() { return !this.room || !this.hostPeer || this.hostPeer === this.myPeer; },
   checkFull() {
     const ahead = [...this.remotes.values()].filter(r => r.jt < this.jt || (r.jt === this.jt && r.peer < (this.myPeer || ''))).length;
-    if (ahead >= MAX_PLAYERS) { toast(`${World.def.title} is full (${MAX_PLAYERS} players). Try again soon.`, true); Game.leave(); }
+    if (ahead >= MAX_PLAYERS) { toast(`${this.title()} is full (${MAX_PLAYERS} players). Try again soon.`, true); Game.leave(); }
   },
 
   // ---- presence: who I am plus position and rotation, about 10 times a second ----
-  identity() { return { v: 1, uid: Me.id || null, nk: Profile.nick || null, st: defaultStarterIndex(), jt: this.jt, sc: this.score || 0 }; },
+  identity() { return { v: 1, uid: Me.id || null, nk: Profile.nick || null, nm: Profile.displayName() || null, st: defaultStarterIndex(), jt: this.jt, sc: this.score || 0 }; },
   score: 0, pubJson: 'null',
   setScore(n) { n = Number(n) || 0; if (n === this.score) return; this.score = n; if (this.room) this.room.presence({ sc: n }).catch(() => {}); },
   // Small per-mode data other players can read through Game.others()[i].x (health, team, carrying...).
@@ -259,28 +384,32 @@ export const Net = {
   // ---- chat ----
   setChatOpen(o) {
     this.chatOpen = !!(o && this.room);
-    $('#chat').hidden = !this.chatOpen; $('#hud-chat').setAttribute('aria-expanded', String(this.chatOpen));
-    if (this.chatOpen) { this.unread = 0; this.renderBadge(); const log = $('#chat-log'); log.scrollTop = log.scrollHeight; }
+    if (this.chatOpen) this.unread = 0;
+    netStore.set({ chatOpen: this.chatOpen, unread: this.unread });
+    gameStore.set({ chatOpen: this.chatOpen });
   },
-  focusChat() { if (!this.room) return; this.setChatOpen(true); setTimeout(() => $('#chat-input').focus(), 0); },
-  count() { $('#chat-count').textContent = `${$('#chat-input').value.length}/${CHAT_MAX}`; },
+  // Enter or / in a game: open the chat and put the cursor in it (the chat panel focuses on focusSeq).
+  focusChat() { if (!this.room) return; this.setChatOpen(true); netStore.set({ focusSeq: ++this.focusSeq }); },
   note(msg) {
-    const el = $('#chat-note'); el.textContent = msg; el.hidden = false;
-    clearTimeout(this.noteTimer); this.noteTimer = setTimeout(() => { el.hidden = true; }, 3500);
+    netStore.set({ note: msg });
+    clearTimeout(this.noteTimer); this.noteTimer = setTimeout(() => netStore.set({ note: '' }), 3500);
   },
+  // Returns true when the message went out (the panel then clears its input).
   send(raw) {
     const text = String(raw || '').replace(/\s+/g, ' ').trim().slice(0, CHAT_MAX);
     if (!text || !this.room || !this.canChat) return false;
     const now = Date.now();
     if (now - this.lastChatAt < 1000) { this.note('One message per second. Wait a moment, then send.'); Sfx.play('error'); return false; }
-    if (!this.room.connected()) { this.note('Reconnecting. Your message was not sent.'); return false; }
+    if (typeof this.room.connected === 'function' && !this.room.connected()) { this.note('Reconnecting. Your message was not sent.'); return false; }
     const clean = WordFilter.clean(text); this.lastChatAt = now;
     const line = { key: 'me', name: Profile.displayName(), text: clean, mine: true };
-    this.room.emit('chat', { text: clean }).catch(e => {
+    let sent; try { sent = Promise.resolve(this.room.emit('chat', { text: clean })); } catch (e) { sent = Promise.reject(e); }
+    sent.catch(e => {
       if (e && e.code === 'not_permitted') {
-        this.canChat = false; this.lines = this.lines.filter(l => l !== line); this.renderChat();
-        this.note("You can read chat here, but your access to this PlayForge doesn't include sending messages.");
-      }
+        this.canChat = false; this.lines = this.lines.filter(l => l !== line);
+        netStore.set({ lines: this.lines.slice(), canChat: false });
+        this.note("You can read chat here, but you can't send messages.");
+      } else if (e && e.code === 'rate') this.note('One message per second. Wait a moment, then send.');
     });
     this.addLine(line);
     if (Settings.bubbles) Game.avatar.say(clean);
@@ -300,104 +429,56 @@ export const Net = {
   },
   system(text) { this.addLine({ system: true, text }); },
   addLine(l) {
+    l.id = ++this.lineSeq;
+    if (!l.system) l.color = l.mine ? MY_COLOR : colorFor(l.key);
     this.lines.push(l); if (this.lines.length > CHAT_KEEP) this.lines.shift();
-    if (!this.chatOpen && !l.system && !l.mine) { this.unread++; this.renderBadge(); }
-    this.renderChat();
-  },
-  renderBadge() { const b = $('#chat-badge'); b.hidden = !this.unread; b.textContent = this.unread > 9 ? '9+' : String(this.unread); },
-  renderChat() {
-    const log = $('#chat-log'), stick = log.scrollTop + log.clientHeight >= log.scrollHeight - 40;
-    log.textContent = '';
-    for (const l of this.lines) {
-      if (l.key && this.mutes.has(l.key)) continue;
-      const li = document.createElement('li');
-      if (l.system) { li.className = 'sys'; li.textContent = l.text; }
-      else {
-        const w = document.createElement('span'); w.className = 'who'; w.style.color = l.mine ? '#FF9F6E' : colorFor(l.key); w.textContent = l.name;
-        li.append(w, document.createTextNode(l.text));
-      }
-      log.appendChild(li);
-    }
-    if (stick) log.scrollTop = log.scrollHeight;
-    const input = $('#chat-input'); input.disabled = !this.canChat; $('#chat-send').disabled = !this.canChat;
-    input.placeholder = this.canChat ? 'Say something nice…' : 'Chat is read-only for you';
+    if (!this.chatOpen && !l.system && !l.mine) this.unread++;
+    netStore.set({ lines: this.lines.slice(), unread: this.unread });
   },
 
   // ---- players list, mute, report ----
   playersDirty() {
     if (this.dirtyQueued) return; this.dirtyQueued = true;
-    requestAnimationFrame(() => { this.dirtyQueued = false; if (!$('#game-menu').hidden) this.renderPlayers(); });
+    const run = () => { if (!this.dirtyQueued) return; this.dirtyQueued = false; this.publishPlayers(); };
+    if (typeof requestAnimationFrame === 'function' && !document.hidden) requestAnimationFrame(run);
+    setTimeout(run, 120); // background tabs get no animation frames
   },
-  renderPlayers() {
-    const box = $('#gm-players'); box.textContent = '';
-    const canReport = !!(Caps.db && Me.id && Caps.canWrite !== false);
-    const others = [...this.remotes.values()].sort((a, b) => a.jt - b.jt);
-    $('#gm-pcount').textContent = this.room ? `${others.length + 1} of ${MAX_PLAYERS}` : 'Solo';
-    for (const it of [null, ...others]) {
-      const me = it === null, el = document.createElement('div'); el.className = 'prow';
-      const c = document.createElement('canvas'); c.width = 8; c.height = 8; c.className = 'px'; drawHead(c, me ? Skins.worn : it.canvas);
-      const mid = document.createElement('div'), nm = document.createElement('div'), tags = document.createElement('div');
-      nm.className = 'pn'; nm.textContent = me ? Profile.displayName() : it.displayName; tags.className = 'tags';
-      const chip = (t, cls) => { const s = document.createElement('span'); s.className = 'chip ' + cls; s.textContent = t; tags.appendChild(s); };
-      if (me) chip('You', 'you');
-      if (this.room && (me ? this.isHost() : this.hostPeer === it.peer)) chip('Host', 'host');
-      const muted = !me && this.mutes.has(it.key);
-      if (!me && it.sameUser) chip('Your other tab', '');
-      if (!me && it.guest) chip('Guest', '');
-      if (muted) chip('Muted', 'muted');
-      mid.append(nm, tags); el.append(c, mid);
-      if (!me) {
-        const acts = document.createElement('div'); acts.className = 'acts';
-        const mb = document.createElement('button'); mb.className = 'btn btn-sm'; mb.textContent = muted ? 'Unmute' : 'Mute';
-        mb.setAttribute('aria-label', `${muted ? 'Unmute' : 'Mute'} ${it.displayName}`); mb.addEventListener('click', () => this.toggleMute(it));
-        acts.appendChild(mb);
-        if (canReport) {
-          const rb = document.createElement('button'); rb.className = 'btn btn-sm btn-danger'; rb.textContent = 'Report';
-          rb.setAttribute('aria-label', `Report ${it.displayName}`); rb.addEventListener('click', () => this.openReport(it));
-          acts.appendChild(rb);
-        }
-        el.appendChild(acts);
-      }
-      box.appendChild(el);
-    }
-    if (!others.length) {
-      const p = document.createElement('p'); p.className = 'help';
-      p.textContent = this.room ? 'Nobody else is here yet. Share this PlayForge and friends who open it can join you.'
-        : Caps.room === null ? "Multiplayer isn't available on this page, so you're playing solo." : 'Connecting to the game room…';
-      box.appendChild(p);
-    }
+  publishPlayers() {
+    this.dirtyQueued = false;
+    const room = !!this.room, test = !!(Game.opts && Game.opts.test);
+    const others = [...this.remotes.values()].sort((a, b) => a.jt - b.jt || (a.peer < b.peer ? -1 : a.peer > b.peer ? 1 : 0));
+    const rows = [{ id: 'me', key: 'me', me: true, name: Profile.displayName(), host: room && this.isHost(), guest: false, sameUser: false, muted: false, skin: Skins.worn, ver: this.meVer }];
+    for (const r of others) rows.push({ id: r.peer, key: r.key, me: false, name: r.displayName, host: room && this.hostPeer === r.peer, guest: r.guest, sameUser: r.sameUser, muted: this.mutes.has(r.key), skin: r.canvas, ver: r.skinVer });
+    const empty = others.length ? ''
+      : test ? 'Test runs are solo. Publish your game and friends can play it with you.'
+      : room ? 'Nobody else is here yet. Share the link to this game and friends who open it can join you.'
+      : this.phase === 'connecting' ? 'Connecting to the game room…'
+      : "Multiplayer isn't available right now, so you're playing solo.";
+    netStore.set({ players: rows, count: room ? `${others.length + 1} of ${MAX_PLAYERS}` : 'Solo', empty, canReport: !!(typeof Caps.report === 'function' && Me.id && Caps.online) });
   },
-  toggleMute(r) {
+  toggleMute(peer) {
+    const r = this.remotes.get(peer); if (!r) return;
     const k = r.key;
     if (this.mutes.has(k)) { this.mutes.delete(k); toast(`${r.displayName} is unmuted`); }
     else { this.mutes.add(k); r.avatar.bubble.userData.hide(); toast(`${r.displayName} is muted. You won't see their chat.`); }
     LS.set('pf.v1.mutes', [...this.mutes].filter(x => !x.startsWith('peer:')));
-    this.renderChat(); this.renderPlayers(); Sfx.play('click');
+    netStore.set({ mutes: [...this.mutes] }); this.publishPlayers(); Sfx.play('click');
   },
-  openReport(r) {
-    this.reportTarget = { by: r.by, nick: r.dbNick || r.nick, recent: r.recent.slice(-5) }; this.reason = null;
-    $('#rp-title').textContent = `Report ${r.displayName}`; $('#rp-note').value = ''; $('#rp-send').disabled = true;
-    this.renderReasons(); Modals.open($('#report-modal'));
+  // A snapshot of who is being reported, taken when the report sheet opens (they may leave before it is sent).
+  reportTarget(peer) {
+    const r = this.remotes.get(peer); if (!r) return null;
+    return { peer, by: r.by, nick: r.dbNick || r.nick || null, name: r.displayName, recent: r.recent.slice(-5) };
   },
-  renderReasons() {
-    const box = $('#rp-reasons'); box.textContent = '';
-    for (const [v, label] of REPORT_REASONS) {
-      const b = document.createElement('button'); b.type = 'button'; b.className = 'reason'; b.setAttribute('role', 'radio');
-      b.setAttribute('aria-checked', String(this.reason === v)); b.textContent = label;
-      b.addEventListener('click', () => { this.reason = v; this.renderReasons(); $('#rp-send').disabled = false; Sfx.play('click'); });
-      box.appendChild(b);
-    }
-  },
-  async sendReport() {
-    const t = this.reportTarget, db = Caps.db; if (!t || !this.reason || !db || !Me.id) return;
-    const btn = $('#rp-send'); btn.disabled = true;
+  async sendReport(t, reason, note) {
+    if (!t || !reason || typeof Caps.report !== 'function' || !Me.id) return false;
     try {
-      await db.collection('reports/' + Me.id + '/items').add({
-        v: 1, kind: 'player', game: this.gameId || World.def.id, target: t.by || null, targetNick: t.nick || null,
-        reason: this.reason, note: $('#rp-note').value.replace(/\s+/g, ' ').trim().slice(0, 200), recent: t.recent, at: Date.now(),
+      await Caps.report({
+        target: t.by || null, targetNick: t.nick || null, game: this.gameId || (Game.def && Game.def.id) || null,
+        reason, note: String(note || '').replace(/\s+/g, ' ').trim().slice(0, 200), recent: t.recent || [],
       });
-      Modals.close($('#report-modal')); toast('Report sent. Thanks for helping keep PlayForge friendly.'); Sfx.play('save');
-    } catch (e) { btn.disabled = false; toast("The report didn't send. Try again in a moment.", true); Sfx.play('error'); }
+      toast('Report sent. Thanks for helping keep PlayForge friendly.'); Sfx.play('save');
+      return true;
+    } catch (e) { toast("The report didn't send. Try again in a moment.", true); Sfx.play('error'); return false; }
   },
 };
 

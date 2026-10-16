@@ -1,10 +1,12 @@
 // Single Node process: Next.js pages, a small REST API (Express) and the multiplayer WebSocket.
+// PlayForge (lib/playforge) adds its own API under /api/pf and WebSocket rooms at /pf-ws.
 const http = require('http');
 const express = require('express');
 const next = require('next');
 const { WebSocketServer } = require('ws');
 const store = require('./lib/store');
 const rooms = require('./lib/rooms');
+const playforge = require('./lib/playforge');
 
 const dev = process.env.NODE_ENV !== 'production';
 const port = Number(process.env.PORT) || 3000;
@@ -14,8 +16,10 @@ async function main() {
   const nextApp = next({ dev });
   const handle = nextApp.getRequestHandler();
   await Promise.all([nextApp.prepare(), store.connect(mongoUri)]);
+  await playforge.init(); // MongoDB when lib/store.js connected, otherwise a JSON file in PF_DATA_DIR
 
   const app = express();
+  playforge.mount(app); // before the JSON parser below: PlayForge parses its own bodies (up to 1 MB)
   app.use('/api', express.json());
 
   app.post('/api/worlds', async (req, res, nxt) => {
@@ -40,11 +44,12 @@ async function main() {
   const nextUpgrade = nextApp.getUpgradeHandler();
   server.on('upgrade', (req, socket, head) => {
     if (req.url.startsWith('/ws?')) wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req));
+    else if (playforge.handleUpgrade(req, socket, head)) { /* PlayForge rooms (/pf-ws) */ }
     else nextUpgrade(req, socket, head); // Next dev hot reload
   });
 
   const shutdown = async () => {
-    await rooms.flushAll();
+    await Promise.all([rooms.flushAll(), playforge.close()]);
     process.exit(0);
   };
   process.on('SIGINT', shutdown);

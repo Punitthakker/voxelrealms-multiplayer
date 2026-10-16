@@ -7,6 +7,7 @@ import { Hud } from './hud.js';
 import { Game } from './game.js';
 import { Skins } from './skins.js';
 import { gameStore } from './stores.js';
+import { Net } from './net.js';
 // Rule sets and built-in games register themselves on import (Forge Park first).
 import './modes-base.js';
 import './games/arena.js';
@@ -15,7 +16,8 @@ import './games/obby.js';
 import './games/party.js';
 
 export * from './core.js';
-export { createStore, uiStore, hudStore, gameStore } from './stores.js';
+export { createStore, uiStore, hudStore, gameStore, platformStore } from './stores.js';
+export { Library, GAME_LIMITS, libraryStore } from './library.js';
 export { Engine, partMaterial, buildPartMesh } from './render.js';
 export { Input, isTyping } from './input.js';
 export { Hud, HUD_ICONS, hudIcon, fmtTime, fmtClock } from './hud.js';
@@ -26,6 +28,8 @@ export { Bots } from './bots.js';
 export { Fx } from './fx.js';
 export { Skins, STARTER_CANVASES, PALETTE } from './skins.js';
 export { createAvatar, makeSkinTexture } from './avatar.js';
+export { Net, Shared, netStore, lobbyStore, MAX_PLAYERS, CHAT_MAX, REPORT_REASONS } from './net.js';
+export { settingsStore, openSettings, closeSettings, applySetting, presetHelp, PRESET_KEYS } from './settings-ui.js';
 
 /* ---------- Loop ---------- */
 export const Loop = { last: 0, n: 0, acc: 0, fps: 60, errs: 0, running: false };
@@ -60,5 +64,6 @@ export function startEngine() {
   Skins.init();
   Hud.init(); Game.init(); Input.init();
   Skins.refreshWorn();
+  Net.start(); // lobby ("N online") once the platform layer is up, and profile changes in game rooms
   if (!Loop.running) { Loop.running = true; requestAnimationFrame(frame); }
 }
