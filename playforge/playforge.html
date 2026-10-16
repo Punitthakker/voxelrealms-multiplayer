@@ -2187,8 +2187,8 @@ const Phys = (() => {
   const cands = [];
   const tq = new V3(), tv = new V3(), gn = new V3(), ng = new V3(), qa = new THREE.Quaternion(), qb = new THREE.Quaternion();
   let hitC = null, seq = 0;
-  const params = { gravity: 50, speed: 8, jump: 16 };
-  const SPEED = 8;
+  const params = { gravity: 50, speed: 11, jump: 16 };
+  const SPEED = 11;
   const shapeOf = p => (p.shape === 'block' ? 'box' : p.shape === 'spawn' || p.shape === 'cylinder' ? 'cyl' : p.shape === 'sphere' || p.shape === 'wedge' ? p.shape : 'box');
   function aabb(c) {
     c.min.set(Infinity, Infinity, Infinity); c.max.set(-Infinity, -Infinity, -Infinity);
