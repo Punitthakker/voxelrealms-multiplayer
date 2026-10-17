@@ -1,0 +1,44 @@
+/* Studio additions (components/playforge/studio). The panels, tools and rows use the original class names in
+   playforge.css (#studio, .st-*); this file only holds what the web app adds. */
+
+/* Panel headers stay in view while a panel scrolls, so the close button on a phone drawer is always reachable.
+   The Properties header slides over the Explorer header once you scroll down to it. */
+.st-panel > .st-ph:first-child, .st-panel > .st-ph2 { position: sticky; top: 0; z-index: 2; background: var(--surface); }
+.st-panel > .st-ph2 { z-index: 3; }
+.st-ph .st-count { white-space: nowrap; }
+
+.st-view { cursor: default; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.st-tools .tool:disabled { opacity: .38; pointer-events: none; }
+.st-tools .tool:focus-visible, .st-dock .btn:focus-visible { outline-offset: 1px; }
+#studio .st-stage { user-select: none; -webkit-user-select: none; }
+
+/* Explorer tags: the Spawn players start on, and locked parts. */
+.st-row .tag.start { background: var(--ember); color: var(--on-ember); }
+.st-row .tag.locked { background: transparent; box-shadow: inset 0 0 0 1px var(--line); }
+.st-spawn-note { margin-top: -6px; }
+.st-props .set-row .lbl small { line-height: 1.3; }
+
+/* Undo and redo: in the top bar on wide screens, in the tool bar on phones (the game's name needs the room), and
+   in the dock on the narrowest phones (the tool bar is full there). */
+.st-hist-tools, .st-hist-dock { display: none !important; }
+@media (max-width: 640px) {
+  .st-bar .st-hist-top { display: none !important; }
+  .st-tools .tool.st-hist-tools { display: grid !important; }
+  .st-tools .tool-sep.st-hist-tools { display: block !important; }
+  .st-tools .tool-sep { margin: 0 2px; }
+  .st-title { min-width: 0; }
+}
+@media (max-width: 380px) {
+  .st-tools .tool.st-hist-tools, .st-tools .tool-sep.st-hist-tools { display: none !important; }
+  .st-dock .btn.st-hist-dock { display: inline-flex !important; }
+}
+
+/* Long links in the "Published" dialog wrap instead of widening it. */
+#ch-body { overflow-wrap: anywhere; }
+
+/* Game settings: the sheet scrolls on short screens; number fields keep their labels on one line each. */
+.st-settings .st-two .field label { display: flex; flex-direction: column; gap: 2px; }
+.st-settings textarea.text-input { font: inherit; color: inherit; }
+
+/* Opening Studio, or a draft that isn't on this device (uses .g-notice and .g-card from game.css). */
+.st-notice .g-card .btn-row { justify-content: center; }

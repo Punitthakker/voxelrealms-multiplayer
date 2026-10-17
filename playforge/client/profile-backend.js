@@ -4,9 +4,14 @@
 import { api } from './api.js';
 
 export const profileBackend = {
+  // How the last load went: 'ok' (the server had a profile), 'empty' (never saved) or 'failed' (no answer).
+  // Only an 'empty' server copy may be filled from this device; after 'failed' the server copy is unknown.
+  loaded: '',
   async load() {
-    const d = await api('GET', '/me/profile');
-    if (!d || !d.updatedAt) return null;
+    let d;
+    try { d = await api('GET', '/me/profile'); } catch (e) { this.loaded = 'failed'; throw e; }
+    if (!d || !d.updatedAt) { this.loaded = 'empty'; return null; }
+    this.loaded = 'ok';
     return { slots: (d.slots || []).map(s => s || null), active: d.active | 0, nick: d.nick || '' };
   },
   async save({ slots, active, nick, skin }) {

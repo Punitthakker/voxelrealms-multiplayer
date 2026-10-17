@@ -63,8 +63,9 @@ export function startPlatform(E) {
     E.Profile.backend = profileBackend;
     conn.start();
     await E.Profile.attachCloud();
-    // A profile made on this device before it had a server copy (or while offline) is uploaded once.
-    if (E.Profile.where !== 'cloud' && (E.Profile.slots.some(Boolean) || E.Profile.nick)) E.Profile.persist();
+    // A profile made on this device before it had a server copy (or while offline) is uploaded once. Not when
+    // the read failed: the server may hold a newer copy, and the next save (or the next visit) syncs anyway.
+    if (profileBackend.loaded === 'empty' && (E.Profile.slots.some(Boolean) || E.Profile.nick)) E.Profile.persist();
     E.Library.init();
     await E.Skins.refreshWorn();
     E.Profile.emit();

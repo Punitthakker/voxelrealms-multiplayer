@@ -10,10 +10,31 @@ import { PartyKit } from './party.js';
 // A darker night than the plain "night" sky, for survival games.
 export const DEEP_NIGHT = { top: '#03050C', horizon: '#0A1022', bottom: '#04060C', sun: '#7F95D8', sunI: 0.1, hemiSky: '#2A3866', hemiGround: '#0A0C14', hemiI: 0.2, fog: 0.32, clouds: false, stars: 1, sunDir: [-0.3, 0.7, 0.4] };
 export const NIGHT_THEMES = {
-  forest: { day: 'forest', ground: '#3F6B3A', groundMat: 'grass', trunk: '#6B4A2E', crown: ['#2C5A3A', '#356B44', '#2F7A55'], kind: 'pine', bush: '#2F6B3A', berry: '#E23E62', rock: '#7D8794', clearing: '#8A6A45', tent: ['#FF6A2B', '#2D62F0', '#FFC53A', '#17A39C'] },
-  snow: { day: 'snow', ground: '#EEF3F8', groundMat: 'sand', trunk: '#5A4030', crown: ['#2F5A48', '#3A6A55'], kind: 'pine', snowcap: true, bush: '#3A5A4A', berry: '#7A4FD0', rock: '#9AA8B8', clearing: '#C9D6E2', tent: ['#E23E62', '#2D62F0', '#FF6A2B', '#7A4FD0'] },
-  desert: { day: 'desert', ground: '#E2C48E', groundMat: 'sand', trunk: '#5E8F4A', kind: 'cactus', bush: '#7A8A4A', berry: '#FF5CA8', rock: '#B08A5E', clearing: '#C9A66E', tent: ['#FF6A2B', '#17A39C', '#E23E62', '#2D62F0'] },
+  forest: { day: 'forest', win: 'The forest is quiet at last', ground: '#3F6B3A', groundMat: 'grass', trunk: '#6B4A2E', crown: ['#2C5A3A', '#356B44', '#2F7A55'], kind: 'pine', bush: '#2F6B3A', berry: '#E23E62', rock: '#7D8794', clearing: '#8A6A45', tent: ['#FF6A2B', '#2D62F0', '#FFC53A', '#17A39C'] },
+  snow: { day: 'snow', win: 'The storm is over and the island is calm', ground: '#EEF3F8', groundMat: 'sand', trunk: '#5A4030', crown: ['#2F5A48', '#3A6A55'], kind: 'pine', snowcap: true, bush: '#3A5A4A', berry: '#7A4FD0', rock: '#9AA8B8', clearing: '#C9D6E2', tent: ['#E23E62', '#2D62F0', '#FF6A2B', '#7A4FD0'] },
+  desert: { day: 'desert', win: 'The dunes are quiet at last', ground: '#E2C48E', groundMat: 'sand', trunk: '#5E8F4A', kind: 'cactus', bush: '#7A8A4A', berry: '#FF5CA8', rock: '#B08A5E', clearing: '#C9A66E', tent: ['#FF6A2B', '#17A39C', '#E23E62', '#2D62F0'] },
 };
+// Fuel one log adds to the campfire (percent).
+const LOG_FUEL = 10;
+const cap1 = s => s.charAt(0).toUpperCase() + s.slice(1);
+// A soft pool of lantern light on the ground that follows the player. The big lawn and forest-floor boxes have
+// only corner vertices, so a PointLight barely shows on them; this unlit disc does.
+export function lightPool(color = '#FFD9A0', radius = 5) {
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const g = ctx2d(c), grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grad.addColorStop(0, 'rgba(255,255,255,1)'); grad.addColorStop(0.45, 'rgba(255,255,255,0.55)'); grad.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grad; g.fillRect(0, 0, 64, 64);
+  const tex = new THREE.CanvasTexture(c);
+  const mat = new THREE.MeshBasicMaterial({ map: tex, color, transparent: true, opacity: 0.42, depthWrite: false, blending: THREE.AdditiveBlending, polygonOffset: true, polygonOffsetFactor: -2 });
+  const mesh = new THREE.Mesh(new THREE.CircleGeometry(radius, 32), mat);
+  mesh.rotation.x = -Math.PI / 2; mesh.renderOrder = 1;
+  return {
+    mesh,
+    add() { if (World.scene) World.scene.add(mesh); return this; },
+    at(x, y, z, k = 1) { mesh.position.set(x, y, z); mesh.scale.setScalar(Math.max(0.01, k)); mesh.visible = k > 0.02; },
+    dispose() { if (mesh.parent) mesh.parent.remove(mesh); mesh.geometry.dispose(); mat.dispose(); tex.dispose(); },
+  };
+}
 // A pitch-dark skin for creatures; glowing eyes are added as separate meshes.
 export function shadowSkin(base = '#0B0A12', fleck = '#16131F') {
   const c = newSkinCanvas(), g = ctx2d(c), R = rng(7);
@@ -96,9 +117,13 @@ Modes.nights = {
   defaults: { nights: 99, theme: 'forest', day: 45, night: 55, creature: 'the Gloom', campers: 4 },
   setup(G) {
     const o = G.modeOpts, T = NIGHT_THEMES[o.theme] || NIGHT_THEMES.forest;
-    this.dayEnv = ENV[T.day] || ENV.day; this.saveKey = 'pf.v1.nights.' + G.def.id; this.cycle = o.day + o.night;
+    this.theme = T; this.dayEnv = ENV[T.day] || ENV.day; this.saveKey = 'pf.v1.nights.' + G.def.id; this.cycle = o.day + o.night;
     this.c = 3; this.survived = 0; this.fuel = 70; this.logs = 0; this.cap = 6; this.food = 100; this.useCool = 0; this.skyKey = ''; this.dead = false;
     this.chops = new Map(); this.down = new Map(); this.eaten = new Map(); this.rescued = new Set(); this.choosing = false; this.respawnT = 0; this.warned = false;
+    // Multiplayer bookkeeping: synced = we have mirrored a host's camp; joinedRun = that camp is not our saved run,
+    // so it must never be saved over it; mine = things we changed locally a moment ago (the host's state may not
+    // include them yet, so don't undo them); lastCtx = the action button and prompt last written.
+    this.synced = false; this.joinedRun = false; this.loaded = false; this.mine = new Map(); this.lastCtx = null; this.lastWhy = null;
     // Index trees and bushes by number so a whole tree (trunk and crown) can vanish and grow back.
     this.trees = new Map(); this.bushes = new Map();
     for (const p of World.parts) {
@@ -120,10 +145,11 @@ Modes.nights = {
       const b = G.bots.add({ name: names[i], pos: at, scale: 0.78, speed: 1.08, seed: 'camper' + names[i] });
       b.data = { state: 'lost', seat: i / 4 * Math.PI * 2 + 0.9, home: at }; return b;
     });
-    G.addAction({ id: 'use', label: 'Chop', icon: 'axe', key: 'KeyE', keyLabel: 'E', primary: true, onDown: () => this.use(G) });
+    G.addAction({ id: 'use', label: 'Use', icon: 'hand', key: 'KeyE', keyLabel: 'E', primary: true, onDown: () => this.use(G) });
     G.hud.objective(`Survive ${o.nights} nights. Keep the fire burning`);
-    this.hud(G, true);
+    this.hud(G);
     const sv = LS.get(this.saveKey, null);
+    this.ownSave = sv && sv.s > 0 ? sv : null;
     if (sv && sv.s > 0 && sv.s < o.nights) this.askContinue(G, sv);
   },
   groupOf(map, k) { let g = map.get(k); if (!g) { g = { trunk: null, ids: [] }; map.set(k, g); } return g; },
@@ -133,30 +159,42 @@ Modes.nights = {
     G.hud.panel({
       title: 'Welcome back to camp', text: `Your saved run reached dawn after night ${sv.s}.`,
       options: [{ id: 'continue', title: `Continue at night ${sv.s + 1}`, blurb: 'Pick up where you left off', on: true }, { id: 'new', title: 'New run', blurb: 'Start again from night 1', on: false }],
-      onPick: id => { if (id === 'continue') this.load(sv, G); else LS.set(this.saveKey, null); this.closePanel(G); },
+      onPick: id => {
+        if (!this.choosing) return;
+        if (id === 'continue') this.load(sv, G); else { LS.set(this.saveKey, null); this.ownSave = null; }
+        this.closePanel(G);
+      },
     });
   },
   hidePanel(G) { if (G) G.hud.closePanel(); },
-  closePanel(G) { this.hidePanel(G); this.choosing = false; G.frozen = false; Sfx.play('click'); this.hud(G, true); },
+  closePanel(G) { this.hidePanel(G); this.choosing = false; G.frozen = false; Sfx.play('click'); this.hud(G); },
   load(sv, G) {
+    this.loaded = true;
     this.survived = sv.s | 0; this.fuel = clamp(+sv.f || 60, 20, 100); this.logs = clamp(sv.l | 0, 0, 20); this.food = clamp(+sv.fo || 80, 30, 100);
-    for (const name of sv.r || []) { const b = this.campers.find(c => c.name === name); if (b) this.rescue(b, G, true); }
+    for (const name of sv.r || []) { const b = this.campers.find(c => c.name === name); if (b) this.rescue(b, G, 'quiet'); }
     G.hud.flash(`Night ${this.survived + 1}`, 'info', 1500);
   },
+  // Saves the camp at dawn and on rescues. Only the host saves; a camp you joined never replaces your own saved
+  // run; and nothing is saved while the "continue your run?" choice is still open.
   save() {
-    if (!Shared.isHost()) return;
+    if (!Shared.isHost() || this.choosing || this.joinedRun) return;
     LS.set(this.saveKey, { s: this.survived, f: Math.round(this.fuel), l: this.logs, fo: Math.round(this.food), r: [...this.rescued], at: Date.now() });
   },
   safeR() { return this.fuel > 0 ? 5 + 13 * (this.fuel / 100) : 0; },
   isNight() { const o = Game.modeOpts; return this.c >= o.day - 3 && this.c < this.cycle - 2; },
-  hud(G, force) {
-    const o = G.modeOpts, D = o.day;
+  // What ended the player's life, in words.
+  cause(G) {
+    const w = G.lastHitBy;
+    if (w === 'hazard') return 'The campfire burned you';
+    if (w === 'hunger') return 'You ran out of food';
+    return `${cap1(G.modeOpts.creature)} got you`;
+  },
+  // The chips keep one order: night, time until night or dawn, fire, logs, food, campers.
+  hud(G) {
+    const o = G.modeOpts, D = o.day, day = this.c < D;
     G.hud.stat('night', `Night ${Math.min(o.nights, this.survived + 1)} / ${o.nights}`, { icon: 'moon', label: 'Night' });
-    const left = this.c < D ? D - this.c : this.cycle - this.c;
-    const ph = this.c < D ? 'sun' : 'moon';
-    if (ph !== this.lastPh || force) { G.hud.removeStat('cycle-sun'); G.hud.removeStat('cycle-moon'); this.lastPh = ph; }
-    if (this.c < D) G.hud.stat('cycle-sun', 'Night in ' + fmtClock(left), { icon: 'sun', label: 'Time until night', warn: left < 10 });
-    else G.hud.stat('cycle-moon', 'Dawn in ' + fmtClock(left), { icon: 'moon', label: 'Time until dawn' });
+    const left = day ? D - this.c : this.cycle - this.c;
+    G.hud.stat('cycle', (day ? 'Night in ' : 'Dawn in ') + fmtClock(left), { icon: day ? 'sun' : 'moon', label: day ? 'Time until night' : 'Time until dawn', warn: day && left < 10 });
     G.hud.stat('fire', this.fuel > 0 ? Math.ceil(this.fuel) + '%' : 'Out!', { icon: 'fire', label: 'Fire', warn: this.fuel < 20 });
     G.hud.stat('logs', `${this.logs} / ${this.cap}`, { icon: 'log', label: 'Logs' });
     G.hud.stat('food', String(Math.ceil(this.food)), { icon: 'berry', label: 'Food', warn: this.food < 20 });

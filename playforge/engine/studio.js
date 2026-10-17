@@ -1,16 +1,21 @@
 import * as THREE from 'three';
-import { $, $$, Caps, DEG, Me, Modals, Profile, Sfx, WordFilter, askChoice, clamp, normHex, showScreen, toast } from './core.js';
+import { Caps, DEG, IS_TOUCH, Profile, Sfx, WordFilter, askChoice, clamp, toast } from './core.js';
+import { createStore } from './stores.js';
 import { Engine } from './render.js';
-import { AXES, ENV, ENV_KEYS, World, finite3, mkPart, normPart } from './world.js';
+import { AXES, ENV, World, finite3, mkPart, normPart } from './world.js';
 import { isTyping } from './input.js';
-import { Game, Modes } from './game.js';
-import { Home } from './home.js';
+import { Modes } from './game.js';
 import { GAME_LIMITS, Library } from './library.js';
 
-/* ---------- 16. Studio: make your own games ---------- */
+/* ---------- Studio: make your own games ---------- */
 // The game being edited is a draft doc (see Library). doc.parts holds every part plus group nodes
 // ({id, name, shape: 'group'}); a part joins a group through part.parent. Studio adds the doc's own part
 // objects to the world, so editing a part and refreshing its mesh is enough to keep both in step.
+//
+// The React screen (components/playforge/studio) owns the markup. It hands Studio the 3D viewport element
+// (Studio.attach(view) -> detach), opens a doc (Studio.open(doc)) and reads studioStore. Every change to the doc
+// goes through Studio.edit(label, ids, fn) (or beginEdit/endEdit for drags) so undo and redo restore exact
+// snapshots, including each part's place in doc.parts.
 export const ST_COLORS = ['#FF6A2B', '#FFC53A', '#7CFF6B', '#3FA34D', '#17A39C', '#4CF0FF', '#2D62F0', '#7A4FD0', '#E23E62', '#FF5CA8', '#8A5A35', '#C08A55', '#EDEFF2', '#9AA5B1', '#4E5B74', '#17223A'];
 export const ST_MATERIALS = ['plastic', 'wood', 'stone', 'brick', 'metal', 'grass', 'sand', 'ice', 'neon'];
 export const BEHAVIOR_INFO = {
@@ -81,77 +86,103 @@ export const ST_INSERT = {
     { label: 'Flag', icon: 'flag', color: '#FF6A2B', make: () => [['cylinder', [0, 3, 0], [0.25, 6, 0.25], '#EDEFF2', 'metal', { name: 'Flag pole' }], ['block', [0.95, 5.3, 0], [1.6, 1, 0.1], '#FF6A2B', 'plastic', { name: 'Flag', canCollide: false }]] },
   ],
 };
-export const stEl = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
+export const INSERT_CATS = [['parts', 'Parts'], ['gameplay', 'Gameplay'], ['scenery', 'Scenery']];
 export const r3 = v => Math.round(v * 1000) / 1000;
-export const stIcon = name => `<svg class="i" aria-hidden="true"><use href="#i-${name}"/></svg>`;
+export const SNAPS = [1, 2, 4, 0.5, 0.25, 0];
+export const STUDIO_TOOLS = [['select', 'Select', 'cursor'], ['move', 'Move', 'move'], ['rotate', 'Rotate', 'rotate'], ['scale', 'Resize', 'scale']];
+const MAX_ROWS = 900;
+const FLY_KEYS = new Set(['w', 'a', 's', 'd', 'q', 'e', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright']);
+const NONE = Object.freeze([]);
+const isPhone = () => !!(window.matchMedia && window.matchMedia('(max-width: 999px)').matches);
+const toolHint = (tool, snapOn) => ({
+  select: IS_TOUCH ? 'Tap a part to select it · drag to look around · pinch to zoom' : 'Click a part to select it · drag to look around · scroll to zoom · WASD to fly',
+  move: 'Drag an arrow, or drag a selected part across the ground',
+  rotate: 'Drag a ring to turn the selection' + (snapOn ? ' in 15° steps' : ''),
+  scale: 'Drag a square to resize the part',
+}[tool] || '');
+const savedText = doc => (doc && doc.publishedAt ? 'Published · saved on this device' : 'Saved on this device');
+// A big flat floor (a remixed level's ground): locked, so taps on it look around instead of grabbing it.
+const plainSnap = m => JSON.stringify([...m.values()].map(s => s && s.p));
+const isFloor = p => p.shape === 'block' && p.size[0] >= 60 && p.size[2] >= 60 && p.size[1] <= 6 && !p.behavior && !(p.rot || []).some(Boolean);
+
+// What the React screen reads. The doc's parts live on Studio (Studio.doc, Studio.byId, Studio.rows()); `rev` bumps
+// whenever they change and `metaRev` whenever the game's settings (title, sky, rules...) change.
+//   sel: selected part ids (a new array on every change), drawer: 'st-left' | 'st-right' | null (phones),
+//   pane: 'explorer' | 'props' (which part of the right drawer to show), drawerSeq: bumps on every drawer request,
+//   status: the save line, hint: one line under the 3D view, testing: Test is running, publishing: busy.
+export const studioStore = createStore({
+  open: false, id: '', title: '', published: false, status: '', rev: 0, metaRev: 0, count: 0, sel: NONE,
+  tool: 'select', snapOn: true, snapStep: 1, canUndo: false, canRedo: false, hint: '', drawer: null, pane: null, drawerSeq: 0,
+  testing: false, publishing: false,
+});
 
 export const Studio = {
   doc: null, index: new Map(), sel: new Set(), tool: 'select', snapOn: true, snapStep: 1, undoStack: [], redoStack: [], pend: null,
-  cam: null, focus: null, yaw: 0.8, pitch: 0.6, dist: 36, keys: new Set(), ptrs: new Map(), drag: null, cat: 'parts',
-  gscene: null, giz: null, outlines: new Map(), ray: null, grid: null, saveTimer: 0, listQueued: false, el: {},
-  SNAPS: [1, 2, 4, 0.5, 0.25, 0],
+  cam: null, focus: null, yaw: 0.8, pitch: 0.6, dist: 36, keys: new Set(), ptrs: new Map(), drag: null,
+  gscene: null, giz: null, outlines: new Map(), ray: null, grid: null, saveTimer: 0, view: null, blocked: () => false,
+  inited: false, testing: false, thumbDone: false, placedNote: false, rev: 0, metaRev: 0, _rows: null, _rowsRev: -1,
+  SNAPS,
 
   init() {
+    if (this.inited) return; this.inited = true;
     Engine.views.studio = this;
     this.cam = new THREE.PerspectiveCamera(60, 1, 0.1, 1500); this.focus = new THREE.Vector3(); this.ray = new THREE.Raycaster();
     this.buildGizmo();
-    const E = this.el = {
-      view: $('#st-view'), title: $('#st-title'), status: $('#st-status'), list: $('#st-list'), props: $('#st-props'), insert: $('#st-insert'),
-      count: $('#st-count'), selBar: $('#st-sel-bar'), selName: $('#st-sel-name'), hint: $('#st-hint'), left: $('#st-left'), right: $('#st-right'),
+  },
+  // Binds pointer and keyboard handling to the screen's 3D viewport element. opts.blocked() returns true while a
+  // dialog is open (keys then belong to it). Returns a detach function.
+  attach(view, opts = {}) {
+    this.init();
+    this.view = view; this.blocked = opts.blocked || (() => false);
+    const offs = [], on = (t, ev, fn, o) => { t.addEventListener(ev, fn, o); offs.push(() => t.removeEventListener(ev, fn, o)); };
+    on(view, 'pointerdown', e => this.onDown(e));
+    on(view, 'pointermove', e => this.onMove(e));
+    on(view, 'pointerup', e => this.onUp(e));
+    on(view, 'pointercancel', e => this.onUp(e, true));
+    on(view, 'lostpointercapture', e => { if (this.ptrs.has(e.pointerId)) this.onUp(e, true); });
+    on(view, 'wheel', e => {
+      e.preventDefault(); if (!this.doc) return;
+      const dy = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1);
+      this.dist = clamp(this.dist * Math.pow(1.0015, dy), 3, 420);
+    }, { passive: false });
+    on(view, 'contextmenu', e => e.preventDefault());
+    on(window, 'keydown', e => this.onKeyDown(e));
+    on(window, 'keyup', e => this.keys.delete(String(e.key).toLowerCase()));
+    on(window, 'blur', () => this.keys.clear());
+    // The last edit is saved at once when the page is closed, reloaded or sent to the background.
+    on(window, 'pagehide', () => this.flush());
+    on(document, 'visibilitychange', () => { if (document.hidden) this.flush(); });
+    return () => {
+      offs.forEach(f => f());
+      if (this.view === view) { this.view = null; this.blocked = () => false; }
+      this.keys.clear(); this.ptrs.clear(); this.drag = null;
     };
-    $('#st-back').addEventListener('click', () => this.leave());
-    $('#st-undo').addEventListener('click', () => this.undo());
-    $('#st-redo').addEventListener('click', () => this.redo());
-    $('#st-test').addEventListener('click', () => this.test());
-    $('#st-publish').addEventListener('click', () => this.publish());
-    $('#st-game').addEventListener('click', () => this.openSettings());
-    $('#st-snap').addEventListener('click', () => this.cycleSnap());
-    for (const id of ['#st-dup', '#st-dup2']) $(id).addEventListener('click', () => this.duplicate());
-    for (const id of ['#st-del', '#st-del2']) $(id).addEventListener('click', () => this.remove());
-    $('#st-group').addEventListener('click', () => this.group());
-    $('#st-ungroup').addEventListener('click', () => this.ungroup());
-    $$('#studio .st-tools [data-tool]').forEach(b => b.addEventListener('click', () => this.setTool(b.dataset.tool)));
-    $$('#st-left [data-cat]').forEach(b => b.addEventListener('click', () => { this.cat = b.dataset.cat; this.renderInsert(); }));
-    $$('#studio [data-drawer]').forEach(b => b.addEventListener('click', () => this.toggleDrawer(b.dataset.drawer, b.dataset.pane)));
-    $$('#studio [data-drawer-close]').forEach(b => b.addEventListener('click', () => this.closeDrawers()));
-    E.title.addEventListener('change', () => this.setTitle(E.title.value));
-    E.title.addEventListener('keydown', e => { if (e.key === 'Enter') E.title.blur(); });
-    E.list.addEventListener('click', e => this.onListClick(e));
-    E.list.addEventListener('dblclick', () => this.focusSel());
-    const v = E.view;
-    v.addEventListener('pointerdown', e => this.onDown(e));
-    v.addEventListener('pointermove', e => this.onMove(e));
-    v.addEventListener('pointerup', e => this.onUp(e));
-    v.addEventListener('pointercancel', e => this.onUp(e, true));
-    v.addEventListener('lostpointercapture', e => { if (this.ptrs.has(e.pointerId)) this.onUp(e, true); });
-    v.addEventListener('wheel', e => { e.preventDefault(); this.dist = clamp(this.dist * Math.pow(1.0015, e.deltaY), 3, 420); }, { passive: false });
-    v.addEventListener('contextmenu', e => e.preventDefault());
-    window.addEventListener('keydown', e => { if (Engine.mode === 'studio' && !isTyping(e) && !e.ctrlKey && !e.metaKey && !Modals.top()) this.keys.add(e.key.toLowerCase()); });
-    window.addEventListener('keyup', e => this.keys.delete(e.key.toLowerCase()));
-    window.addEventListener('blur', () => this.keys.clear());
-    this.bindSettings();
-    this.renderInsert();
   },
   resize(w, h) { this.cam.aspect = w / h; this.cam.updateProjectionMatrix(); },
-  isPhone() { return window.matchMedia('(max-width: 999px)').matches; },
+
+  // ---- drafts for the routes ----
+  // A new blank game saved as a draft. Its Baseplate is locked so taps on the ground look around.
+  createDraft() {
+    const n = Library.drafts().length + 1, doc = Library.blank(n > 1 ? `My game ${n}` : 'My game');
+    for (const p of doc.parts) if (p.name === 'Baseplate') p.locked = true;
+    return Library.saveDraft(doc) ? doc : null;
+  },
+  // An editable copy of a game definition (built-in or community), saved as a draft. Null if it can't be copied.
+  remixDraft(def) {
+    if (!def) return null;
+    let doc;
+    try { doc = Library.remix(def); } catch (e) { console.error(e); toast("This game can't be copied.", true); return null; }
+    if (Number.isFinite(def.killY)) doc.killY = def.killY; // players who fall off still respawn in the copy
+    if (doc.parts.length > GAME_LIMITS.parts) { doc.parts = doc.parts.slice(0, GAME_LIMITS.parts); toast(`Your copy keeps the first ${GAME_LIMITS.parts} parts.`); }
+    for (const p of doc.parts) if (p && p.shape !== 'group' && isFloor(normPart(p))) p.locked = true;
+    return Library.saveDraft(doc) ? doc : null;
+  },
 
   // ---- opening and leaving ----
-  newGame() {
-    const n = Library.drafts().length + 1, doc = Library.blank(n > 1 ? `My game ${n}` : 'My game');
-    Library.saveDraft(doc); this.open(doc);
-    toast('New game! Add parts from Insert, then press Test.');
-  },
-  remix(def) {
-    if (!def) return;
-    let doc;
-    try { doc = Library.remix(def); } catch (e) { console.error(e); toast("This game can't be copied.", true); return; }
-    if (doc.parts.length > GAME_LIMITS.parts) { doc.parts = doc.parts.slice(0, GAME_LIMITS.parts); toast(`Your copy keeps the first ${GAME_LIMITS.parts} parts.`); }
-    if (!Library.saveDraft(doc)) return;
-    this.open(doc); toast(`You're editing your own copy of ${def.title}.`);
-  },
   open(doc) {
     if (!doc) return;
-    if (this.doc && this.doc !== doc) this.save(true);
+    this.init();
+    if (this.doc && this.doc !== doc) this.close();
     const seen = new Set(), parts = [];
     for (const p of Array.isArray(doc.parts) ? doc.parts : []) {
       if (!p || typeof p !== 'object') continue;
@@ -168,16 +199,17 @@ export const Studio = {
     }
     delete doc.spawn;
     this.doc = doc; this.index = new Map(parts.map(p => [p.id, p]));
-    this.sel = new Set(); this.undoStack = []; this.redoStack = []; this.pend = null; this.drag = null;
-    this.el.title.value = doc.title || 'Untitled game';
+    this.sel = new Set(); this.undoStack = []; this.redoStack = []; this.pend = null; this.drag = null; this.ptrs.clear();
+    this.testing = false; this.thumbDone = false; this.placedNote = false; this._rows = null;
+    this.rev++; this.metaRev++;
+    studioStore.set({ open: true, id: doc.id, testing: false, publishing: false, drawer: null, sel: NONE });
     this.show(); this.frameStart();
   },
+  // Puts the editor on screen: the renderer in the viewport and the doc's parts in an edit-mode world.
   show() {
-    showScreen('studio'); Engine.setMode('studio'); Engine.attach(this.el.view);
-    $('#st-publish').hidden = !Caps.db;
-    this.loadWorld(); this.closeDrawers();
-    this.renderList(); this.selChanged(); this.syncUndo(); this.setTool(this.tool);
-    this.el.status.textContent = this.doc.publishedAt ? 'Published · saved on this device' : 'Saved on this device';
+    Engine.setMode('studio'); if (this.view) Engine.attach(this.view);
+    this.loadWorld(); this.syncOutlines();
+    this.syncAll();
   },
   loadWorld() {
     World.load({ id: this.doc.id, title: this.doc.title, env: this.doc.env, parts: [] }, { edit: true });
@@ -188,29 +220,59 @@ export const Studio = {
     for (const o of this.outlines.values()) this.gscene.remove(o);
     this.outlines.clear();
   },
+  // The camera looks along the start point's facing, a little ahead of it, so the first inserts land beside the
+  // Spawn instead of on top of it.
+  // A narrow (phone) view looks more straight along the facing, so the Spawn stays in the picture.
   frameStart() {
-    const sp = this.doc.parts.find(p => p.shape === 'spawn');
-    this.focus.set(sp ? sp.pos[0] : 0, sp ? sp.pos[1] : 0, sp ? sp.pos[2] : 0);
-    this.yaw = 0.8; this.pitch = 0.6; this.dist = 36;
+    const sp = this.startSpawn(), yaw = Number.isFinite(this.doc.spawnYaw) ? this.doc.spawnYaw : Math.PI, narrow = this.cam.aspect < 0.9;
+    const ahead = narrow ? 9 : 12;
+    if (sp) this.focus.set(sp.pos[0] + Math.sin(yaw) * ahead, sp.pos[1], sp.pos[2] + Math.cos(yaw) * ahead);
+    else this.focus.set(0, 0, 0);
+    this.yaw = yaw + Math.PI + (narrow ? 0.22 : 0.8); this.pitch = 0.6; this.dist = narrow ? 40 : 36;
   },
+  startSpawn() { return this.doc ? this.doc.parts.find(p => p.shape === 'spawn') || null : null; },
+  // Before leaving for home: a thumbnail of the current view and a final save.
   leave() {
-    if (!this.doc) { showScreen('home'); Engine.setMode('home'); return; }
+    if (!this.doc) return;
     this.cancelDrag();
-    if (World.scene) this.doc.thumb = this.thumb();
+    if (!this.testing && World.scene) { this.doc.thumb = this.thumb(); this.thumbDone = true; }
+    this.save(true); Sfx.play('click');
+  },
+  // The screen unmounted: save (with a thumbnail unless leave() made one) and clear the editor.
+  close() {
+    if (!this.doc) return;
+    this.cancelDrag();
+    if (!this.testing && !this.thumbDone && World.scene) this.doc.thumb = this.thumb();
     this.save(true);
-    World.unload(); this.grid = null; this.doc = null; this.sel = new Set(); this.closeDrawers();
+    if (!this.testing) World.unload(); // while testing, the game owns the world and unloads it itself
+    this.grid = null; this.doc = null; this.index = new Map(); this.sel = new Set(); this.undoStack = []; this.redoStack = [];
     for (const o of this.outlines.values()) this.gscene.remove(o);
-    this.outlines.clear();
-    showScreen('home'); Engine.setMode('home'); Sfx.play('click');
-    if (Home.onReturn) Home.onReturn();
+    this.outlines.clear(); this.testing = false; this._rows = null;
+    if (Engine.mode === 'studio') Engine.setMode('home');
+    studioStore.set({ open: false, id: '', sel: NONE, drawer: null, testing: false, publishing: false, canUndo: false, canRedo: false });
+  },
+  // The page is closing or going to the background: a field still being typed in commits, then the doc is saved.
+  flush() {
+    if (!this.doc) return;
+    const a = document.activeElement;
+    if (a && a !== document.body && isTyping({ target: a })) a.blur();
+    this.save(true);
   },
   onEscape() {
-    if (this.el.left.classList.contains('open') || this.el.right.classList.contains('open')) { this.closeDrawers(); return; }
+    if (studioStore.get().drawer) { this.closeDrawers(); return; }
     if (this.drag) { this.cancelDrag(); return; }
     if (this.sel.size) this.select([]);
   },
+  onKeyDown(e) {
+    if (Engine.mode !== 'studio' || !this.doc || this.testing || e.defaultPrevented || this.blocked()) return;
+    if (isTyping(e)) return; // fields handle their own Enter and Escape
+    if (e.key === 'Escape') { this.onEscape(); return; }
+    const k = String(e.key).toLowerCase();
+    if (!e.ctrlKey && !e.metaKey && !e.altKey && FLY_KEYS.has(k)) { this.keys.add(k); if (k.startsWith('arrow')) e.preventDefault(); }
+    this.onKey(e);
+  },
   onKey(e) {
-    const k = e.key.toLowerCase(), mod = e.ctrlKey || e.metaKey;
+    const k = String(e.key).toLowerCase(), mod = e.ctrlKey || e.metaKey;
     if (mod && k === 'z') { e.preventDefault(); if (e.shiftKey) this.redo(); else this.undo(); return; }
     if (mod && k === 'y') { e.preventDefault(); this.redo(); return; }
     if (mod && k === 'd') { e.preventDefault(); this.duplicate(); return; }
@@ -221,23 +283,38 @@ export const Studio = {
     if (k === '1' || k === '2' || k === '3' || k === '4') { this.setTool(['select', 'move', 'rotate', 'scale'][+k - 1]); return; }
     if (k === 'f') { this.focusSel(); return; }
     if (k === 'g') { this.cycleSnap(); return; }
-    if (k === 'r' && this.sel.size) { this.quickTurn(); }
+    if (k === 'r' && this.sel.size) this.quickTurn();
   },
+
+  // ---- store ----
+  syncAll() {
+    const d = this.doc;
+    studioStore.set({
+      open: !!d, id: d ? d.id : '', title: d ? d.title || 'Untitled game' : '', published: !!(d && d.publishedAt), status: savedText(d),
+      rev: this.rev, metaRev: this.metaRev, count: d ? this.partCount() : 0, sel: this.sel.size ? [...this.sel] : NONE,
+      tool: this.tool, snapOn: this.snapOn, snapStep: this.snapStep, hint: toolHint(this.tool, this.snapOn),
+      canUndo: !!this.undoStack.length, canRedo: !!this.redoStack.length, testing: this.testing,
+    });
+  },
+  syncUndo() { studioStore.set({ canUndo: !!this.undoStack.length, canRedo: !!this.redoStack.length }); },
+  metaChanged() { this.metaRev++; this.save(true); studioStore.set({ metaRev: this.metaRev, title: this.doc.title || 'Untitled game' }); },
 
   // ---- saving ----
   setTitle(v) {
     if (!this.doc) return;
-    const t = WordFilter.clean(String(v || '').trim().slice(0, GAME_LIMITS.title)) || 'Untitled game';
-    this.doc.title = t; this.el.title.value = t; this.save(true);
+    this.doc.title = WordFilter.clean(String(v || '').replace(/\s+/g, ' ').trim().slice(0, GAME_LIMITS.title)) || 'Untitled game';
+    this.metaChanged();
   },
   changed() {
-    this.syncUndo(); this.renderListSoon(); this.syncSelBar();
-    this.el.status.textContent = 'Saving…'; clearTimeout(this.saveTimer); this.saveTimer = setTimeout(() => this.save(), 700);
+    this.rev++; this.syncUndo();
+    clearTimeout(this.saveTimer); this.saveTimer = setTimeout(() => this.save(), 700);
+    studioStore.set({ rev: this.rev, count: this.partCount(), status: 'Saving…' });
   },
   save(now) {
-    clearTimeout(this.saveTimer); if (!this.doc) return;
+    clearTimeout(this.saveTimer); if (!this.doc) return false;
     const ok = Library.saveDraft(this.doc);
-    if (this.el.status) this.el.status.textContent = ok ? (this.doc.publishedAt ? 'Published · saved on this device' : 'Saved on this device') : 'Not saved: this device is full';
+    studioStore.set({ status: ok ? savedText(this.doc) : 'Not saved: this device is full', published: !!this.doc.publishedAt, title: this.doc.title || 'Untitled game' });
+    return ok;
   },
   thumb() {
     if (!World.scene) return '';
@@ -253,60 +330,81 @@ export const Studio = {
   partCount() { let n = 0; for (const p of this.doc.parts) if (p.shape !== 'group') n++; return n; },
   kids(gid) { return this.doc.parts.filter(p => p.parent === gid && p.shape !== 'group').map(p => p.id); },
   newId(prefix = 'p') { let id; do { id = prefix + Math.random().toString(36).slice(2, 9); } while (this.index.has(id)); return id; },
-  addRaw(p) { this.doc.parts.push(p); this.index.set(p.id, p); if (p.shape !== 'group') World.addPart(p); },
+  // at: index in doc.parts (the end when left out). Undo puts parts back where they were.
+  addRaw(p, at) {
+    const L = this.doc.parts;
+    if (Number.isInteger(at) && at >= 0 && at < L.length) L.splice(at, 0, p); else L.push(p);
+    this.index.set(p.id, p); if (p.shape !== 'group') World.addPart(p);
+  },
   removeRaw(id) {
     const i = this.doc.parts.findIndex(p => p.id === id); if (i >= 0) this.doc.parts.splice(i, 1);
     this.index.delete(id); World.removePart(id); this.sel.delete(id); this.dropOutline(id);
   },
   copyOf(p) { return p ? JSON.parse(JSON.stringify(p)) : null; },
-  snap(ids) { const m = new Map(); for (const id of ids) m.set(id, this.copyOf(this.byId(id))); return m; },
+  // id -> {p: a copy of the part, i: its index in doc.parts} | null (the part doesn't exist)
+  snap(ids) {
+    const m = new Map(), pos = new Map(); this.doc.parts.forEach((p, i) => pos.set(p.id, i));
+    for (const id of ids) { const p = this.byId(id); m.set(id, p ? { p: this.copyOf(p), i: pos.get(id) } : null); }
+    return m;
+  },
   pushHist(label, before, after) {
     this.undoStack.push({ label, before, after }); if (this.undoStack.length > 120) this.undoStack.shift();
     this.redoStack = []; this.syncUndo();
   },
   // One undoable step: ids are the parts fn changes or removes; fn returns the ids of parts it creates.
+  // An edit that changes nothing (the same colour again, a size of -3 on a part already 3) leaves no step.
   edit(label, ids, fn) {
     const before = this.snap(ids), created = fn() || [];
     const all = [...new Set([...ids, ...created])];
     for (const id of created) if (!before.has(id)) before.set(id, null);
-    this.pushHist(label, before, this.snap(all)); this.changed();
+    const after = this.snap(all);
+    if (!created.length && plainSnap(before) === plainSnap(after)) return;
+    this.pushHist(label, before, after); this.changed();
   },
   // Drags change parts live; the step is recorded when the drag ends.
   beginEdit(ids) { this.pend = { ids: [...ids], before: this.snap(ids) }; },
   endEdit(label = 'Edit') {
     const pe = this.pend; this.pend = null; if (!pe) return;
     const after = this.snap(pe.ids);
-    if (JSON.stringify([...pe.before.values()]) === JSON.stringify([...after.values()])) return;
+    if (plainSnap(pe.before) === plainSnap(after)) return;
     for (const id of pe.ids) { const p = this.byId(id); if (p && p.shape !== 'group') World.refreshPart(p); }
-    this.pushHist(label, pe.before, after); this.changed(); this.renderProps();
+    this.pushHist(label, pe.before, after); this.changed();
   },
+  // Drops a drag in progress and puts the parts back (Escape, a cancelled pointer, Test, leaving).
   cancelDrag() {
     if (this.pend) { this.applyState(this.pend.before); this.pend = null; }
     this.drag = null; this.ptrs.clear();
   },
   applyState(map) {
+    const adds = [];
     for (const [id, st] of map) {
       const cur = this.byId(id);
       if (!st) { if (cur) this.removeRaw(id); continue; }
-      if (cur) { for (const k of Object.keys(cur)) delete cur[k]; Object.assign(cur, this.copyOf(st)); if (cur.shape !== 'group') World.refreshPart(cur); }
-      else this.addRaw(this.copyOf(st));
+      if (cur) { for (const k of Object.keys(cur)) delete cur[k]; Object.assign(cur, this.copyOf(st.p)); if (cur.shape !== 'group') World.refreshPart(cur); }
+      else adds.push(st);
     }
+    // Parts come back at their old places, in ascending order so every index is right when it is used.
+    adds.sort((a, b) => (a.i ?? 1e9) - (b.i ?? 1e9));
+    for (const st of adds) this.addRaw(this.copyOf(st.p), st.i);
     for (const id of [...this.sel]) if (!this.byId(id)) this.sel.delete(id);
   },
   undo() {
-    if (this.pend) return; const h = this.undoStack.pop(); if (!h) return;
+    if (this.pend || !this.doc) return; const h = this.undoStack.pop(); if (!h) return;
     this.applyState(h.before); this.redoStack.push(h); this.afterHistory('Undid ' + h.label.toLowerCase());
   },
   redo() {
-    if (this.pend) return; const h = this.redoStack.pop(); if (!h) return;
+    if (this.pend || !this.doc) return; const h = this.redoStack.pop(); if (!h) return;
     this.applyState(h.after); this.undoStack.push(h); this.afterHistory('Redid ' + h.label.toLowerCase());
   },
-  afterHistory(msg) { this.changed(); this.renderList(); this.selChanged(); Sfx.play('click'); this.el.hint.textContent = msg; },
-  syncUndo() { $('#st-undo').disabled = !this.undoStack.length; $('#st-redo').disabled = !this.redoStack.length; },
+  afterHistory(msg) { this.changed(); this.selChanged(); Sfx.play('click'); studioStore.set({ hint: msg }); },
 
   // ---- selection ----
   select(ids) { this.sel = new Set(ids.filter(id => { const p = this.byId(id); return p && p.shape !== 'group'; })); this.selChanged(); },
-  selChanged() { this.syncOutlines(); this.renderProps(); this.markList(); this.syncSelBar(); },
+  selChanged() {
+    this.syncOutlines();
+    const cur = studioStore.get().sel, next = [...this.sel];
+    if (cur.length !== next.length || next.some((id, i) => cur[i] !== id)) studioStore.set({ sel: next.length ? next : NONE });
+  },
   selParts() { return [...this.sel].map(id => this.byId(id)).filter(Boolean); },
   selGroup() { // the group, when the selection is exactly one whole group
     const ps = this.selParts(); if (!ps.length || !ps[0].parent) return null;
@@ -324,6 +422,13 @@ export const Studio = {
     else this.select(ids);
     Sfx.play('click');
   },
+  // A row in the Explorer: a group row picks all its parts.
+  listSelect(id, additive) {
+    const p = this.byId(id); if (!p) return;
+    const ids = p.shape === 'group' ? this.kids(id) : [id];
+    if (additive) { const s = new Set(this.sel), on = !ids.every(x => s.has(x)); ids.forEach(x => (on ? s.add(x) : s.delete(x))); this.select([...s]); }
+    else this.select(ids);
+  },
   selCenter() {
     const c = new THREE.Vector3(), ps = this.selParts(); if (!ps.length) return c;
     for (const p of ps) c.x += p.pos[0], c.y += p.pos[1], c.z += p.pos[2];
@@ -335,55 +440,33 @@ export const Studio = {
     for (const p of ps) r = Math.max(r, Math.hypot(p.pos[0] - c.x, p.pos[1] - c.y, p.pos[2] - c.z) + Math.max(...p.size) / 2);
     this.focus.copy(c); this.dist = clamp(r * 2.6, 6, 260);
   },
-  syncSelBar() {
-    const ps = this.doc ? this.selParts() : [], g = ps.length ? this.selGroup() : null;
-    this.el.selBar.hidden = !ps.length;
-    this.el.selName.textContent = g ? g.name : ps.length === 1 ? ps[0].name : `${ps.length} parts`;
-    const any = ps.length > 0;
-    for (const id of ['#st-dup2', '#st-del2']) $(id).disabled = !any;
-    $('#st-group').disabled = ps.length < 2 || !!g; $('#st-ungroup').disabled = !ps.some(p => p.parent);
+  // The selection bar's label: the group's name, the part's name, or "3 parts".
+  selLabel() {
+    const ps = this.doc ? this.selParts() : []; if (!ps.length) return '';
+    const g = this.selGroup();
+    return g ? g.name : ps.length === 1 ? ps[0].name : `${ps.length} parts`;
   },
 
   // ---- tools, snapping, drawers ----
   setTool(t) {
-    this.tool = t;
-    $$('#studio .st-tools [data-tool]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.tool === t)));
-    this.el.hint.textContent = {
-      select: 'Tap a part to select it · drag to look around · scroll or pinch to zoom',
-      move: 'Drag an arrow, or drag a selected part across the ground',
-      rotate: 'Drag a ring to turn the selection' + (this.snapOn ? ' in 15° steps' : ''),
-      scale: 'Drag a square to resize the part',
-    }[t];
+    if (!STUDIO_TOOLS.some(x => x[0] === t)) return;
+    this.tool = t; studioStore.set({ tool: t, hint: toolHint(t, this.snapOn) });
   },
   cycleSnap() {
-    const i = this.SNAPS.indexOf(this.snapOn ? this.snapStep : 0), next = this.SNAPS[(i + 1) % this.SNAPS.length];
+    const i = SNAPS.indexOf(this.snapOn ? this.snapStep : 0), next = SNAPS[(i + 1) % SNAPS.length];
     this.snapOn = next > 0; if (next > 0) this.snapStep = next;
-    $('#st-snap').setAttribute('aria-pressed', String(this.snapOn)); $('#st-snap-v').textContent = this.snapOn ? String(this.snapStep) : 'Off';
+    studioStore.set({ snapOn: this.snapOn, snapStep: this.snapStep, hint: toolHint(this.tool, this.snapOn) });
     toast(this.snapOn ? `Snap: ${this.snapStep} stud${this.snapStep === 1 ? '' : 's'}` : 'Snap off');
   },
   snapV(v) { return this.snapOn ? r3(Math.round(v / this.snapStep) * this.snapStep) : r3(v); },
+  // Phones: the Insert panel and the Explorer/Properties panel slide in as drawers.
   toggleDrawer(id, pane) {
-    const d = $('#' + id), open = !d.classList.contains('open') || !!pane;
-    this.closeDrawers(); if (!open) return;
-    d.classList.add('open');
-    if (pane === 'props') setTimeout(() => $('#st-props-head').scrollIntoView({ block: 'start' }), 30);
-    else if (pane === 'explorer') d.scrollTop = 0;
+    const s = studioStore.get(), open = s.drawer !== id || (!!pane && pane !== s.pane);
+    studioStore.set({ drawer: open ? id : null, pane: open ? pane || null : null, drawerSeq: s.drawerSeq + 1 });
   },
-  closeDrawers() { this.el.left.classList.remove('open'); this.el.right.classList.remove('open'); },
+  closeDrawers() { if (studioStore.get().drawer) studioStore.set({ drawer: null, pane: null }); },
 
   // ---- insert ----
-  renderInsert() {
-    $$('#st-left [data-cat]').forEach(b => b.setAttribute('aria-selected', String(b.dataset.cat === this.cat)));
-    const box = this.el.insert; box.textContent = '';
-    for (const it of ST_INSERT[this.cat]) {
-      const b = stEl('button', 'st-item'); b.type = 'button';
-      b.innerHTML = `<span class="ic">${stIcon(it.icon)}</span><span></span>`;
-      b.querySelector('.ic').style.background = it.color; b.lastChild.textContent = it.label;
-      b.setAttribute('aria-label', 'Insert ' + it.label);
-      b.addEventListener('click', () => this.insert(it));
-      box.appendChild(b);
-    }
-  },
   dropPoint() {
     this.ray.setFromCamera({ x: 0, y: 0 }, this.cam);
     const hits = this.ray.intersectObjects([...World.meshes.values()].filter(m => m.visible), false);
@@ -392,14 +475,41 @@ export const Studio = {
       at.copy(hits[0].point);
       if (hits[0].face) { const n = hits[0].face.normal.clone().transformDirection(hits[0].object.matrixWorld); if (n.y < 0.5) at.addScaledVector(n, 2.5); }
     } else if (!this.ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), at) || at.distanceTo(this.cam.position) > 400) at.copy(this.focus);
-    const s = this.snapOn ? Math.max(1, this.snapStep) : 0;
-    if (s) { at.x = Math.round(at.x / s) * s; at.z = Math.round(at.z / s) * s; }
-    at.y = r3(at.y); return at;
+    this.snapXZ(at); at.y = r3(at.y); return at;
+  },
+  snapXZ(at) { const s = this.snapOn ? Math.max(1, this.snapStep) : 0; if (s) { at.x = Math.round(at.x / s) * s; at.z = Math.round(at.z / s) * s; } return at; },
+  // New parts never land where players start: if they would cover a Spawn, they slide away from the camera until
+  // they are clear of it (true when they moved).
+  clearOfSpawn(at, raws) {
+    const spawns = this.doc.parts.filter(p => p.shape === 'spawn'); if (!spawns.length) return false;
+    const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for (const [, pos, size, , , x = {}] of raws) {
+      const turned = Array.isArray(x.rot) && x.rot.some(Boolean), h = size.map(v => v / 2), r = turned ? Math.max(...h) : 0;
+      for (let k = 0; k < 3; k++) { const e = turned ? r : h[k]; lo[k] = Math.min(lo[k], pos[k] - e); hi[k] = Math.max(hi[k], pos[k] + e); }
+    }
+    const zones = spawns.map(s => ({ x0: s.pos[0] - s.size[0] / 2 - 0.5, x1: s.pos[0] + s.size[0] / 2 + 0.5, z0: s.pos[2] - s.size[2] / 2 - 0.5, z1: s.pos[2] + s.size[2] / 2 + 0.5, y0: s.pos[1] - s.size[1] / 2 - 0.5, y1: s.pos[1] + s.size[1] / 2 + 3.5 }));
+    const hit = p => zones.some(z => p.x + hi[0] > z.x0 && p.x + lo[0] < z.x1 && p.z + hi[2] > z.z0 && p.z + lo[2] < z.z1 && p.y + hi[1] > z.y0 && p.y + lo[1] < z.y1);
+    if (!hit(at)) return false;
+    const dir = new THREE.Vector3(this.focus.x - this.cam.position.x, 0, this.focus.z - this.cam.position.z);
+    if (dir.lengthSq() < 1e-6) dir.set(0, 0, -1); dir.normalize();
+    const step = this.snapOn ? Math.max(1, this.snapStep) : 1, start = at.clone();
+    for (let i = 1; i <= 80; i++) {
+      at.copy(start).addScaledVector(dir, step * i); this.snapXZ(at);
+      if (!hit(at)) return true;
+    }
+    at.copy(start); return false;
   },
   insert(it) {
-    if (!this.doc) return;
-    const at = this.dropPoint(), raws = it.make(at);
+    if (!this.doc || this.testing) return;
+    const at = this.dropPoint();
+    let raws = it.make(at);
     if (this.partCount() + raws.length > GAME_LIMITS.parts) { toast(`Games can have up to ${GAME_LIMITS.parts} parts.`, true); return; }
+    if (this.clearOfSpawn(at, raws)) {
+      raws = it.make(at);
+      if (!this.placedNote) { this.placedNote = true; toast('Placed beside the Spawn, so players don’t start inside it.'); }
+    }
+    const isSpawn = raws.length === 1 && raws[0][0] === 'spawn';
+    const firstSpawn = isSpawn ? this.doc.parts.findIndex(p => p.shape === 'spawn') : -1;
     const ids = [];
     this.edit('Insert ' + it.label, [], () => {
       let gid = null;
@@ -407,13 +517,15 @@ export const Studio = {
       for (const [shape, pos, size, color, material = 'plastic', x = {}] of raws) {
         const p = normPart(mkPart(shape, [r3(at.x + pos[0]), r3(at.y + pos[1]), r3(at.z + pos[2])], size.slice(), color, material, Object.assign({ name: it.label }, JSON.parse(JSON.stringify(x)))));
         p.id = this.newId('p'); if (gid) p.parent = gid;
-        this.addRaw(p); ids.push(p.id);
+        // A new Spawn goes before the old ones in the list: players start on the first Spawn.
+        this.addRaw(p, firstSpawn >= 0 ? firstSpawn : undefined); ids.push(p.id);
       }
       return ids;
     });
-    this.renderList(); this.select(ids);
+    this.select(ids);
     if (this.tool === 'select') this.setTool('move');
-    if (this.isPhone()) this.closeDrawers();
+    if (isPhone()) this.closeDrawers();
+    if (firstSpawn >= 0) toast('Players now start on this Spawn.');
     Sfx.play('pick');
   },
 
@@ -434,13 +546,13 @@ export const Studio = {
       }
       return out;
     });
-    this.renderList(); this.select(out); Sfx.play('pick');
+    this.select(out); Sfx.play('pick');
   },
   remove() {
     const ps = this.selParts(); if (!ps.length) return;
     const ids = ps.map(p => p.id), groups = [...new Set(ps.map(p => p.parent).filter(Boolean))].filter(g => this.kids(g).every(id => this.sel.has(id)));
     this.edit('Delete', [...ids, ...groups], () => { for (const id of [...ids, ...groups]) this.removeRaw(id); });
-    this.renderList(); this.select([]); Sfx.play('break');
+    this.select([]); Sfx.play('break');
   },
   group() {
     const ps = this.selParts(); if (ps.length < 2) return;
@@ -451,18 +563,18 @@ export const Studio = {
       for (const g of emptied) this.removeRaw(g);
       return [gid];
     });
-    this.renderList(); this.selChanged(); toast('Grouped. Tap the group once to pick it all, twice for one part.');
+    this.selChanged(); toast(IS_TOUCH ? 'Grouped. Tap the group once to pick it all, twice for one part.' : 'Grouped. Click the group once to pick it all, twice for one part.');
   },
   ungroup() {
     const ps = this.selParts().filter(p => p.parent); if (!ps.length) return;
     const ids = ps.map(p => p.id), emptied = [...new Set(ps.map(p => p.parent))].filter(g => this.kids(g).every(id => this.sel.has(id)));
     this.edit('Ungroup', [...ids, ...emptied], () => { for (const p of ps) delete p.parent; for (const g of emptied) this.removeRaw(g); });
-    this.renderList(); this.selChanged();
+    this.selChanged();
   },
   quickTurn() { // R turns the selection 90° around its center
-    const ps = this.selParts(), c = this.selCenter(), q = new THREE.Quaternion().setFromAxisAngle(AXES.y, Math.PI / 2);
+    const ps = this.selParts(); if (!ps.length) return;
+    const c = this.selCenter(), q = new THREE.Quaternion().setFromAxisAngle(AXES.y, Math.PI / 2);
     this.edit('Turn', ps.map(p => p.id), () => { for (const p of ps) { this.rotatePart(p, { pos: p.pos.slice(), rot: p.rot.slice() }, q, c); World.refreshPart(p); } });
-    this.renderProps();
   },
   partQuat(p) { return new THREE.Quaternion().setFromEuler(new THREE.Euler(p.rot[0] * DEG, p.rot[1] * DEG, p.rot[2] * DEG, 'YXZ')); },
   rotatePart(p, o, q, c) {
@@ -476,15 +588,54 @@ export const Studio = {
     m.position.set(p.pos[0], p.pos[1], p.pos[2]); m.rotation.set(p.rot[0] * DEG, p.rot[1] * DEG, p.rot[2] * DEG, 'YXZ'); m.updateMatrix();
   },
 
+  // ---- Properties (the React panel calls these with the ids it was showing) ----
+  // fn(part) changes one part. ids: the parts the panel showed when the field was edited, so a value typed for
+  // one part never lands on a part selected since. Defaults to the selection.
+  editProps(label, fn, ids) {
+    if (!this.doc) return;
+    const ps = (ids || [...this.sel]).map(id => this.byId(id)).filter(p => p && p.shape !== 'group'); if (!ps.length) return;
+    this.edit(label, ps.map(p => p.id), () => { for (const p of ps) { fn(p); World.refreshPart(p); } });
+  },
+  renameGroup(gid, name) {
+    const g = this.byId(gid); if (!g || g.shape !== 'group') return;
+    const v = WordFilter.clean(String(name || '').trim()).slice(0, 40) || 'Group'; if (v === g.name) return;
+    this.edit('Rename group', [g.id], () => { g.name = v; });
+  },
+  setBehavior(p, b) {
+    const prev = p.behavior;
+    if (b === 'none') { delete p.behavior; delete p.bp; }
+    else {
+      p.behavior = b; const bp = {};
+      for (const prm of (BEHAVIOR_INFO[b] || {}).params || []) bp[prm.k] = Array.isArray(prm.def) ? prm.def.slice() : prm.def;
+      if (b === 'teleport') bp.to = [r3(p.pos[0]), r3(p.pos[1] + 4), r3(p.pos[2] - 16)];
+      if (b === 'coin') p.canCollide = false;
+      p.bp = bp;
+    }
+    if (prev === 'coin' && b !== 'coin') delete p.canCollide; // coins are walk-through; other behaviors are solid again
+  },
+  // One behavior parameter; for a vector parameter, axis k (0..2) of it, read from the part when the edit applies.
+  setParam(ids, prm, v, k) {
+    this.editProps(prm.label, q => {
+      let nv;
+      if (prm.vec) { nv = finite3(q.bp && q.bp[prm.k], prm.def); nv[k] = r3(clamp(v, -5000, 5000)); }
+      else if (prm.opts) nv = prm.opts.includes(v) ? v : prm.def;
+      else nv = r3(clamp(v, prm.min, prm.max));
+      q.bp = Object.assign({}, q.bp || {}, { [prm.k]: nv });
+    }, ids);
+  },
+
   // ---- pointer input ----
   setRay(e) {
-    const r = this.el.view.getBoundingClientRect();
+    const r = this.view.getBoundingClientRect();
     this.ray.setFromCamera({ x: ((e.clientX - r.left) / r.width) * 2 - 1, y: -((e.clientY - r.top) / r.height) * 2 + 1 }, this.cam);
   },
+  // The part under the pointer. A locked part (the Baseplate) is never picked: a tap on it selects nothing.
   pickPart(e) {
     this.setRay(e);
     const hits = this.ray.intersectObjects([...World.meshes.values()].filter(m => m.visible), false);
-    return hits.length ? { part: hits[0].object.userData.part, point: hits[0].point.clone() } : null;
+    if (!hits.length) return null;
+    const part = hits[0].object.userData.part;
+    return part && !part.locked ? { part, point: hits[0].point.clone() } : null;
   },
   pickGizmo(e) {
     if (!this.sel.size || this.tool === 'select' || !this.giz.root.visible) return null;
@@ -493,21 +644,26 @@ export const Studio = {
     return hits.length ? hits[0].object.userData : null;
   },
   onDown(e) {
-    if (!this.doc) return;
-    this.closeDrawers();
-    try { this.el.view.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+    if (!this.doc || !this.view || this.testing) return;
+    // A Properties field being typed in commits now, for the part it was showing, before the tap selects another.
+    const a = document.activeElement;
+    if (a && a !== document.body && isTyping({ target: a })) a.blur();
+    // With a drawer open, a tap on the 3D view only closes the drawer.
+    if (studioStore.get().drawer) { e.preventDefault(); this.closeDrawers(); return; }
+    try { this.view.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
     this.ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY });
     if (this.ptrs.size === 2) {
-      if (this.pend) { this.endEdit(this.drag && this.drag.label); }
+      if (this.pend) this.endEdit(this.drag && this.drag.label);
       this.drag = Object.assign({ kind: 'pinch' }, this.pinchInfo()); return;
     }
-    if (this.ptrs.size > 2) return;
+    if (this.ptrs.size > 2) { if (this.drag && this.drag.kind === 'pinch') Object.assign(this.drag, this.pinchInfo()); return; }
     const additive = e.shiftKey || e.ctrlKey || e.metaKey;
     if (e.button === 1 || e.button === 2) { this.drag = { kind: 'pan' }; return; }
     const h = this.pickGizmo(e);
     if (h) { this.startHandle(h, e); return; }
     const hit = this.pickPart(e);
-    if (hit && this.sel.has(hit.part.id) && (this.tool === 'move' || this.tool === 'select') && !additive) { this.drag = { kind: 'pending-move', hit }; return; }
+    // Only the Move tool drags parts across the ground; with Select a drag always looks around.
+    if (hit && this.sel.has(hit.part.id) && this.tool === 'move' && !additive) { this.drag = { kind: 'pending-move', hit }; return; }
     this.drag = { kind: 'pending', hit, additive };
   },
   onMove(e) {
@@ -527,10 +683,18 @@ export const Studio = {
     if (!this.ptrs.has(e.pointerId)) return;
     this.ptrs.delete(e.pointerId);
     const d = this.drag; if (!d) return;
-    if (d.kind === 'pinch') { if (this.ptrs.size < 2) this.drag = null; return; }
+    if (d.kind === 'pinch') {
+      if (this.ptrs.size >= 2) Object.assign(d, this.pinchInfo()); // a third finger lifted: new baseline, no jump
+      else if (this.ptrs.size === 1) { const q = [...this.ptrs.values()][0]; q.sx = q.x; q.sy = q.y; this.drag = { kind: 'orbit' }; } // the finger left keeps looking around
+      else this.drag = null;
+      return;
+    }
     if (this.ptrs.size) return;
     if ((d.kind === 'pending' || d.kind === 'pending-move') && !cancel) this.clickSelect(d.hit && d.hit.part, d.additive);
-    if (d.kind === 'free' || d.kind === 'handle') this.endEdit(d.label);
+    if (d.kind === 'free' || d.kind === 'handle') {
+      if (cancel) { this.cancelDrag(); return; } // the system took the pointer: put the parts back
+      this.endEdit(d.label);
+    }
     this.drag = null;
   },
   pan(dx, dy) {
@@ -588,9 +752,13 @@ export const Studio = {
       for (const [id, o] of d.orig) { const p = this.byId(id); if (!p) continue; p.pos = o.pos.map((v, i) => r3(v + d.axis.getComponent(i) * delta)); this.syncMesh(p); }
     } else if (d.h.kind === 'scale') {
       const [id, o] = [...d.orig][0], p = this.byId(id), i = 'xyz'.indexOf(d.h.axis), s = d.h.sign; if (!p) return;
-      let ns = o.size[i] + (t - d.t0) * s;
-      ns = this.snapOn ? Math.max(this.snapStep, Math.round(ns / this.snapStep) * this.snapStep) : Math.max(0.1, ns);
+      // Snapping steps the change from the current size (as Move steps the offset), so a 0.4 thick pad stays 0.4
+      // until it is dragged a whole step.
+      let ds = (t - d.t0) * s;
+      if (this.snapOn) ds = Math.round(ds / this.snapStep) * this.snapStep;
+      let ns = Math.max(this.snapOn ? Math.min(this.snapStep, o.size[i]) : 0.1, o.size[i] + ds);
       ns = Math.min(2048, r3(ns)); const grow = ns - o.size[i];
+      if (p.size[i] === ns) return;
       p.size = o.size.slice(); p.size[i] = ns;
       p.pos = o.pos.map((v, j) => r3(v + d.axis.getComponent(j) * s * grow / 2));
       World.refreshPart(p);
@@ -655,7 +823,7 @@ export const Studio = {
 
   // ---- per frame ----
   frame(dt) {
-    if (!World.scene || !this.doc) return;
+    if (!World.scene || !this.doc || this.testing) return;
     const K = this.keys, kx = (K.has('d') || K.has('arrowright') ? 1 : 0) - (K.has('a') || K.has('arrowleft') ? 1 : 0);
     const kz = (K.has('w') || K.has('arrowup') ? 1 : 0) - (K.has('s') || K.has('arrowdown') ? 1 : 0), ky = (K.has('e') ? 1 : 0) - (K.has('q') ? 1 : 0);
     if (kx || kz || ky) {
@@ -672,247 +840,144 @@ export const Studio = {
     r.autoClear = false; r.clearDepth(); r.render(this.gscene, this.cam); r.autoClear = true;
   },
 
-  // ---- explorer ----
-  renderListSoon() { if (this.listQueued) return; this.listQueued = true; requestAnimationFrame(() => { this.listQueued = false; if (this.doc) this.renderList(); }); },
-  renderList() {
-    const L = this.el.list; L.textContent = ''; if (!this.doc) return;
-    const kidsOf = new Map(), MAX = 900; let n = 0;
+  // ---- Explorer rows ----
+  // [{p, kind: 'grp' | 'kid' | '', n (parts in a group)}], at most MAX_ROWS, cached per parts version.
+  rows() {
+    if (!this.doc) return NONE;
+    if (this._rows && this._rowsRev === this.rev) return this._rows;
+    const kidsOf = new Map(), out = []; let more = false;
     for (const p of this.doc.parts) if (p.shape !== 'group' && p.parent && this.index.has(p.parent)) { if (!kidsOf.has(p.parent)) kidsOf.set(p.parent, []); kidsOf.get(p.parent).push(p); }
-    const frag = document.createDocumentFragment();
     for (const p of this.doc.parts) {
-      if (n >= MAX) break;
-      if (p.shape === 'group') { const ks = kidsOf.get(p.id) || []; frag.append(this.row(p, 'grp', ks.length)); n++; for (const k of ks) { if (n >= MAX) break; frag.append(this.row(k, 'kid')); n++; } }
-      else if (!p.parent || !this.index.has(p.parent)) { frag.append(this.row(p)); n++; }
+      if (out.length >= MAX_ROWS) { more = true; break; }
+      if (p.shape === 'group') {
+        const ks = kidsOf.get(p.id) || []; out.push({ p, kind: 'grp', n: ks.length });
+        for (const k of ks) { if (out.length >= MAX_ROWS) { more = true; break; } out.push({ p: k, kind: 'kid' }); }
+      } else if (!p.parent || !this.index.has(p.parent)) out.push({ p, kind: '' });
     }
-    const total = this.partCount();
-    if (n >= MAX) frag.append(stEl('div', 'st-more', `Showing the first ${MAX} rows. Tap parts in the 3D view to pick the rest.`));
-    L.append(frag); this.el.count.textContent = `${total} / ${GAME_LIMITS.parts} parts`; this.markList();
-  },
-  row(p, kind, nKids) {
-    const b = stEl('button', 'st-row' + (kind ? ' ' + kind : '')); b.type = 'button'; b.dataset.id = p.id; b.setAttribute('role', 'option');
-    if (kind === 'grp') { b.innerHTML = stIcon('folder') + '<span class="nm"></span><span class="tag"></span>'; b.querySelector('.tag').textContent = String(nKids); }
-    else {
-      b.innerHTML = '<span class="sw"></span><span class="nm"></span>' + (p.behavior || p.tag ? '<span class="tag"></span>' : '');
-      b.querySelector('.sw').style.background = p.color;
-      if (p.behavior || p.tag) b.querySelector('.tag').textContent = p.behavior ? (BEHAVIOR_INFO[p.behavior] || {}).short || p.behavior : p.tag;
-    }
-    b.querySelector('.nm').textContent = p.name;
-    return b;
-  },
-  markList() {
-    for (const b of this.el.list.children) {
-      const id = b.dataset.id; if (!id) continue;
-      let on = this.sel.has(id);
-      if (b.classList.contains('grp')) { const ks = this.kids(id); on = ks.length > 0 && ks.every(k => this.sel.has(k)); }
-      b.classList.toggle('sel', on); b.setAttribute('aria-selected', String(on));
-    }
-  },
-  onListClick(e) {
-    const b = e.target.closest('.st-row'); if (!b) return;
-    const id = b.dataset.id, p = this.byId(id); if (!p) return;
-    const ids = p.shape === 'group' ? this.kids(id) : [id], additive = e.shiftKey || e.ctrlKey || e.metaKey;
-    if (additive) { const s = new Set(this.sel), on = !ids.every(x => s.has(x)); ids.forEach(x => (on ? s.add(x) : s.delete(x))); this.select([...s]); }
-    else this.select(ids);
-  },
-
-  // ---- properties ----
-  renderProps() {
-    const box = this.el.props; box.textContent = '';
-    if (!this.doc) return;
-    const ps = this.selParts();
-    if (!ps.length) { box.append(stEl('p', 'st-empty', 'Select a part to change how it looks and what it does. Tap it in the 3D view or pick it in the Explorer.')); return; }
-    const one = ps.length === 1 ? ps[0] : null, g = this.selGroup();
-    if (g) {
-      const f = this.fld('Group name'), i = this.text(g.name, 40);
-      i.addEventListener('change', () => { const v = WordFilter.clean(i.value.trim()).slice(0, 40) || 'Group'; this.edit('Rename group', [g.id], () => { g.name = v; }); this.syncSelBar(); });
-      f.append(i);
-    }
-    if (one) {
-      const f = this.fld('Name'), i = this.text(one.name, 40);
-      i.addEventListener('change', () => this.editProps('Rename', p => { p.name = WordFilter.clean(i.value.trim()).slice(0, 40) || p.shape; }));
-      f.append(i);
-      this.fld('Position').append(this.xyz('Position', one.pos, (k, v) => this.editProps('Move', p => { p.pos[k] = r3(clamp(v, -5000, 5000)); })));
-      this.fld('Size').append(this.xyz('Size', one.size, (k, v) => this.editProps('Resize', p => { p.size[k] = r3(clamp(Math.abs(v), 0.05, 2048)); })));
-      this.fld('Rotation (degrees)').append(this.xyz('Rotation', one.rot, (k, v) => this.editProps('Rotate', p => { p.rot[k] = Math.round(v * 100) / 100; })));
-    } else if (!g) box.append(stEl('p', 'st-empty', `${ps.length} parts selected. Changes below apply to all of them.`));
-    else box.append(stEl('p', 'st-empty', `${ps.length} parts in this group. Changes below apply to all of them.`));
-    // Color
-    const cf = this.fld('Color'), sw = stEl('div', 'st-sw'), cur = ps[0].color;
-    for (const c of ST_COLORS) {
-      const b = stEl('button', 'swatch'); b.type = 'button'; b.style.background = c; b.setAttribute('aria-label', 'Color ' + c); b.setAttribute('aria-pressed', String(c.toUpperCase() === String(cur).toUpperCase()));
-      b.addEventListener('click', () => this.editProps('Color', p => { p.color = c; }, true)); sw.append(b);
-    }
-    const row = stEl('div', 'st-color'), pickWrap = stEl('label', 'cur-swatch'), pick = stEl('input'), hex = this.text(cur, 7);
-    pick.type = 'color'; pick.value = /^#[0-9a-f]{6}$/i.test(cur) ? cur : '#9AA5B1'; pick.setAttribute('aria-label', 'Pick any color'); pickWrap.style.background = cur; pickWrap.append(pick);
-    pick.addEventListener('input', () => { pickWrap.style.background = pick.value; });
-    pick.addEventListener('change', () => this.editProps('Color', p => { p.color = pick.value.toUpperCase(); }, true));
-    hex.setAttribute('aria-label', 'Color code'); hex.addEventListener('change', () => { const v = normHex(hex.value.trim()); if (!v) { hex.value = cur; return; } this.editProps('Color', p => { p.color = v; }, true); });
-    row.append(pickWrap, hex); cf.append(sw, row);
-    // Material, transparency, physics
-    const mf = this.fld('Material'), ms = this.dropdown(ST_MATERIALS.map(m => [m, m[0].toUpperCase() + m.slice(1)]), ps[0].material);
-    ms.addEventListener('change', () => this.editProps('Material', p => { p.material = ms.value; })); mf.append(ms);
-    const tf = this.fld('See-through'), tr = stEl('input'); tr.type = 'range'; tr.min = '0'; tr.max = '1'; tr.step = '0.05'; tr.value = String(ps[0].transparency || 0); tr.setAttribute('aria-label', 'See-through');
-    tr.addEventListener('change', () => this.editProps('See-through', p => { p.transparency = +tr.value; })); tf.append(tr);
-    box.append(this.check('Anchored', 'Unanchored parts fall when the game starts', ps.every(p => p.anchored !== false), on => this.editProps(on ? 'Anchor' : 'Unanchor', p => { if (on) delete p.anchored; else p.anchored = false; })));
-    box.append(this.check('Solid', 'Players bump into it and can stand on it', ps.every(p => p.canCollide !== false), on => this.editProps(on ? 'Make solid' : 'Make walk-through', p => { if (on) delete p.canCollide; else p.canCollide = false; })));
-    // Behavior
-    const bf = this.fld('What it does'), cb = ps.every(p => (p.behavior || 'none') === (ps[0].behavior || 'none')) ? ps[0].behavior || 'none' : '';
-    const bs = this.dropdown([...(cb ? [] : [['', 'Mixed']]), ...Object.entries(BEHAVIOR_INFO).map(([k, v]) => [k, v.label])], cb);
-    bs.addEventListener('change', () => { if (!bs.value) return; this.editProps('Behavior', p => this.setBehavior(p, bs.value), true); });
-    bf.append(bs);
-    const info = BEHAVIOR_INFO[cb];
-    if (info && info.help) bf.append(stEl('p', 'help', info.help));
-    if (one && one.behavior && info && info.params) for (const prm of info.params) this.paramField(one, prm);
-    // Tag
-    const gf = this.fld('Tag'), tg = this.text(ps.every(p => (p.tag || '') === (ps[0].tag || '')) ? ps[0].tag || '' : '', 24);
-    tg.placeholder = 'hazard'; tg.setAttribute('aria-label', 'Tag');
-    tg.addEventListener('change', () => { const v = tg.value.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 24); this.editProps('Tag', p => { if (v) p.tag = v; else delete p.tag; }); });
-    gf.append(tg, stEl('p', 'help', 'Rules can look for tags. "hazard" makes any part deadly, even moving ones.'));
-    const acts = stEl('div', 'btn-row'), dup = stEl('button', 'btn btn-sm'), del = stEl('button', 'btn btn-sm btn-danger');
-    dup.innerHTML = stIcon('copy') + 'Duplicate'; del.innerHTML = stIcon('trash') + 'Delete';
-    dup.addEventListener('click', () => this.duplicate()); del.addEventListener('click', () => this.remove());
-    acts.append(dup, del); box.append(acts);
-  },
-  setBehavior(p, b) {
-    if (b === 'none') { delete p.behavior; delete p.bp; return; }
-    p.behavior = b; const bp = {};
-    for (const prm of (BEHAVIOR_INFO[b] || {}).params || []) bp[prm.k] = Array.isArray(prm.def) ? prm.def.slice() : prm.def;
-    if (b === 'teleport') bp.to = [r3(p.pos[0]), r3(p.pos[1] + 4), r3(p.pos[2] - 16)];
-    if (b === 'coin') { p.canCollide = false; }
-    p.bp = bp;
-  },
-  paramField(p, prm) {
-    const f = this.fld(prm.label), val = p.bp && p.bp[prm.k] !== undefined ? p.bp[prm.k] : prm.def;
-    const set = v => this.editProps(prm.label, q => { q.bp = Object.assign({}, q.bp || {}, { [prm.k]: v }); });
-    if (prm.opts) { const s = this.dropdown(prm.opts.map(o => [o, o.toUpperCase()]), val); s.addEventListener('change', () => set(s.value)); f.append(s); }
-    else if (prm.vec) { const cur = finite3(val, prm.def); f.append(this.xyz(prm.label, cur, (k, v) => { const nv = cur.slice(); nv[k] = r3(v); set(nv); })); }
-    else f.append(this.num(val, v => set(r3(clamp(v, prm.min, prm.max))), prm.label));
-  },
-  editProps(label, fn, rerender) {
-    const ps = this.selParts(); if (!ps.length) return;
-    this.edit(label, ps.map(p => p.id), () => { for (const p of ps) { fn(p); World.refreshPart(p); } });
-    if (rerender) this.renderProps();
-  },
-  fld(label) { const f = stEl('div', 'st-f'); f.append(stEl('b', '', label)); this.el.props.append(f); return f; },
-  text(v, max) { const i = stEl('input', 'text-input'); i.value = v || ''; i.maxLength = max; i.spellcheck = false; i.autocomplete = 'off'; return i; },
-  num(v, onSet, label) {
-    const i = stEl('input', 'text-input'); i.type = 'number'; i.step = 'any'; i.inputMode = 'decimal'; i.value = String(r3(Number(v) || 0)); if (label) i.setAttribute('aria-label', label);
-    i.addEventListener('change', () => { const n = parseFloat(i.value); if (!Number.isFinite(n)) { i.value = String(r3(Number(v) || 0)); return; } onSet(n); });
-    return i;
-  },
-  xyz(label, vals, onSet) {
-    const g = stEl('div', 'st-xyz');
-    ['X', 'Y', 'Z'].forEach((L, k) => { const lab = stEl('label'); lab.append(stEl('span', '', L), this.num(vals[k], v => onSet(k, v), `${label} ${L}`)); g.append(lab); });
-    return g;
-  },
-  dropdown(opts, value) {
-    const s = stEl('select', 'text-input');
-    for (const [v, t] of opts) { const o = stEl('option', '', t); o.value = v; s.append(o); }
-    s.value = value; return s;
-  },
-  check(title, help, on, onSet) {
-    const row = stEl('label', 'set-row'), lbl = stEl('span', 'lbl'), sw = stEl('span', 'switch'), i = stEl('input');
-    lbl.append(stEl('b', '', title), stEl('small', '', help)); i.type = 'checkbox'; i.setAttribute('role', 'switch'); i.checked = on;
-    i.addEventListener('change', () => onSet(i.checked)); sw.append(i, stEl('span')); row.append(lbl, sw); return row;
+    out.more = more; out.max = MAX_ROWS;
+    this._rows = out; this._rowsRev = this.rev;
+    return out;
   },
 
   // ---- game settings ----
-  bindSettings() {
-    const sky = $('#sg-sky');
-    for (const k of ENV_KEYS) { const o = stEl('option', '', k[0].toUpperCase() + k.slice(1)); o.value = k; sky.append(o); }
-    $('#sg-name').addEventListener('change', () => { this.setTitle($('#sg-name').value); $('#sg-name').value = this.doc.title; });
-    $('#sg-desc').addEventListener('change', () => { if (!this.doc) return; this.doc.desc = WordFilter.clean($('#sg-desc').value.trim()).slice(0, GAME_LIMITS.desc); this.save(true); });
-    sky.addEventListener('change', () => {
-      if (!this.doc) return; const env = ENV[sky.value] || ENV.day; this.doc.env = { sky: sky.value };
-      $('#sg-grav').value = String(env.gravity || 1); this.syncGrav();
-      World.setEnv(Object.assign({}, ENV.day, env)); World.env = Object.assign({}, ENV.day, env); this.save(true);
-    });
-    $('#sg-grav').addEventListener('input', () => this.syncGrav());
-    $('#sg-grav').addEventListener('change', () => {
-      if (!this.doc) return; const g = +$('#sg-grav').value, base = (ENV[this.doc.env.sky] || {}).gravity || 1;
-      if (Math.abs(g - base) < 0.001) delete this.doc.env.gravity; else this.doc.env.gravity = g;
-      this.save(true);
-    });
-    $('#sg-mode').addEventListener('change', () => { if (!this.doc) return; this.doc.mode = $('#sg-mode').value; this.syncModeHelp(); this.save(true); });
-    $('#sg-time').addEventListener('change', () => {
-      if (!this.doc) return; const v = Math.round(clamp(parseFloat($('#sg-time').value) || 0, 0, 3600));
-      if (v) this.doc.modeOpts.timeLimit = v; else delete this.doc.modeOpts.timeLimit; $('#sg-time').value = String(v); this.save(true);
-    });
-    $('#sg-kill').addEventListener('change', () => {
-      if (!this.doc) return; const raw = parseFloat($('#sg-kill').value);
-      if (Number.isFinite(raw)) this.doc.killY = Math.round(clamp(raw, -500, 100)); else delete this.doc.killY;
-      $('#sg-kill').value = Number.isFinite(this.doc.killY) ? String(this.doc.killY) : ''; this.save(true);
-    });
-    $('#sg-download').addEventListener('click', () => this.download());
-    $('#sg-delete').addEventListener('click', () => this.deleteGame());
+  setDesc(v) { if (!this.doc) return; this.doc.desc = WordFilter.clean(String(v || '').trim()).slice(0, GAME_LIMITS.desc); this.metaChanged(); },
+  setSky(k) {
+    if (!this.doc || !ENV[k]) return;
+    this.doc.env = { sky: k };
+    const env = Object.assign({}, ENV.day, ENV[k]);
+    if (World.scene && !this.testing) { World.setEnv(env); World.env = env; }
+    this.metaChanged();
   },
-  syncGrav() { $('#sg-grav-v').textContent = Math.round(+$('#sg-grav').value * 100) + '%'; },
-  syncModeHelp() {
-    const m = this.doc.mode, info = STUDIO_MODES[m];
-    $('#sg-mode-help').textContent = info ? info[1] : `Rules from the game you copied (${(Modes[m] && Modes[m].label) || m}). Its special parts keep working while their tags stay the same.`;
-    $('#sg-time').disabled = m !== 'custom';
+  gravity() { return this.doc ? Number(this.doc.env.gravity) || (ENV[this.doc.env.sky] || {}).gravity || 1 : 1; },
+  setGravity(g) {
+    if (!this.doc) return; g = clamp(Number(g) || 1, 0.2, 1.6);
+    const base = (ENV[this.doc.env.sky] || {}).gravity || 1;
+    if (Math.abs(g - base) < 0.001) delete this.doc.env.gravity; else this.doc.env.gravity = Math.round(g * 100) / 100;
+    this.metaChanged();
   },
-  openSettings() {
-    if (!this.doc) return; const d = this.doc;
-    $('#sg-name').value = d.title || ''; $('#sg-desc').value = d.desc || '';
-    $('#sg-sky').value = ENV[d.env.sky] ? d.env.sky : 'day';
-    $('#sg-grav').value = String(Number(d.env.gravity) || (ENV[d.env.sky] || {}).gravity || 1); this.syncGrav();
-    const ms = $('#sg-mode'); ms.textContent = '';
-    const modes = Object.entries(STUDIO_MODES).map(([k, v]) => [k, v[0]]);
-    if (!STUDIO_MODES[d.mode] && Modes[d.mode]) modes.push([d.mode, `${Modes[d.mode].label || d.mode} (from the original)`]);
-    for (const [k, t] of modes) { const o = stEl('option', '', t); o.value = k; ms.append(o); }
-    ms.value = Modes[d.mode] ? d.mode : 'custom'; this.syncModeHelp();
-    $('#sg-time').value = String(Number(d.modeOpts.timeLimit) || 0);
-    $('#sg-kill').value = Number.isFinite(d.killY) ? String(d.killY) : '';
-    $('#sg-download').hidden = !Caps.downloads;
-    Modals.open($('#st-game-modal'));
+  setRules(m) { if (!this.doc || !(STUDIO_MODES[m] || Modes[m])) return; this.doc.mode = m; this.metaChanged(); },
+  // [[mode, label]] for the Rules menu: Studio's own rule sets, plus the copied game's when it is a remix.
+  rulesOptions() {
+    const d = this.doc, out = Object.entries(STUDIO_MODES).map(([k, v]) => [k, v[0]]);
+    if (d && !STUDIO_MODES[d.mode] && Modes[d.mode]) out.push([d.mode, `${Modes[d.mode].label || d.mode} (from the original)`]);
+    return out;
+  },
+  rulesHelp(m) {
+    const info = STUDIO_MODES[m];
+    return info ? info[1] : `Rules from the game you copied (${(Modes[m] && Modes[m].label) || m}). Its special parts keep working while their tags stay the same.`;
+  },
+  setTimeLimit(v) {
+    if (!this.doc) return; const n = Math.round(clamp(parseFloat(v) || 0, 0, 3600));
+    if (n) this.doc.modeOpts.timeLimit = n; else delete this.doc.modeOpts.timeLimit;
+    this.metaChanged();
+  },
+  setKillY(v) {
+    if (!this.doc) return; const raw = typeof v === 'string' ? (v.trim() ? parseFloat(v) : NaN) : Number(v);
+    if (Number.isFinite(raw)) this.doc.killY = Math.round(clamp(raw, -500, 100)); else delete this.doc.killY;
+    this.metaChanged();
   },
   async download() {
     const dl = Caps.downloads; if (!dl || !this.doc) return;
     const d = this.doc, file = { v: 1, kind: 'playforge-game', title: d.title, desc: d.desc || '', mode: d.mode, modeOpts: d.modeOpts, env: d.env, killY: d.killY, spawnYaw: d.spawnYaw, parts: Library.compact(d.parts) };
     const name = (d.title || 'game').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'game';
     try { await dl.save({ filename: `${name}.playforge.json`, data: new Blob([JSON.stringify(file)], { type: 'application/json' }) }); toast('Game file downloaded'); }
-    catch (err) { const code = err && err.code; if (code === 'declined') return; toast(code === 'rate_limited' ? 'A download is already waiting for your answer.' : 'Downloads are not available here.', true); }
+    catch (err) { const code = err && err.code; if (code === 'declined') return; toast('Downloads are not available here.', true); }
   },
+  // Deletes the draft (and unpublishes it when it was published). True when it was deleted.
   async deleteGame() {
-    if (!this.doc) return; const d = this.doc;
-    const ok = await askChoice({ title: `Delete ${d.title}?`, body: d.publishedAt ? 'This removes it from this device and unpublishes it, so nobody can play it any more. This cannot be undone.' : 'This removes it from this device. This cannot be undone.', buttons: [{ label: 'Keep it', value: false }, { label: 'Delete', value: true, kind: 'danger' }] });
-    if (!ok) return;
-    Modals.close($('#st-game-modal'));
-    if (d.publishedAt && Caps.db && Me.id) { try { await Library.unpublish(d.id); } catch (e) { toast("Couldn't unpublish it. It was still deleted from this device.", true); } }
-    const id = d.id; this.doc = null; Library.deleteDraft(id);
-    World.unload(); this.grid = null; this.sel = new Set(); for (const o of this.outlines.values()) this.gscene.remove(o); this.outlines.clear();
-    showScreen('home'); Engine.setMode('home'); if (Home.onReturn) Home.onReturn(); toast('Game deleted');
+    if (!this.doc) return false; const d = this.doc;
+    if (d.publishedAt && Library.canPublish()) {
+      try { await Library.unpublish(d.id); } catch (e) { toast("Couldn't unpublish it. It was still deleted from this device.", true); }
+    }
+    if (this.doc !== d) return false;
+    this.cancelDrag(); clearTimeout(this.saveTimer);
+    if (!this.testing) World.unload();
+    this.grid = null; this.doc = null; this.sel = new Set(); this.index = new Map(); this.undoStack = []; this.redoStack = [];
+    for (const o of this.outlines.values()) this.gscene.remove(o);
+    this.outlines.clear();
+    Library.deleteDraft(d.id);
+    if (Engine.mode === 'studio') Engine.setMode('home');
+    studioStore.set({ open: false, id: '', sel: NONE, drawer: null, testing: false });
+    toast('Game deleted');
+    return true;
+  },
+  async unpublish() {
+    if (!this.doc || !this.doc.publishedAt) return false;
+    const d = this.doc;
+    try { await Library.unpublish(d.id); } catch (e) { toast("Couldn't unpublish it right now. Try again in a moment.", true); return false; }
+    if (this.doc === d) { delete d.publishedAt; this.save(true); this.metaChanged(); }
+    toast('Unpublished. Only you can see it now.');
+    return true;
   },
 
   // ---- test and publish ----
+  // Hands back the definition the game screen plays (GameScreen with test: true). Studio clears its world; resume()
+  // brings the editor back with the same camera when the test ends.
   test() {
-    if (!this.doc) return;
+    if (!this.doc || this.testing) return null;
     this.cancelDrag(); this.save(true);
     if (!this.doc.parts.some(p => p.shape === 'spawn')) toast('Tip: insert a Spawn so players start in the right place.');
     const def = Library.toDef(this.doc, Profile.displayName());
-    this.closeDrawers(); World.unload(); this.grid = null;
+    this.closeDrawers(); this.keys.clear();
+    World.unload(); this.grid = null;
     for (const o of this.outlines.values()) this.gscene.remove(o);
     this.outlines.clear();
-    Game.enter(def, { test: true, onExit: () => { if (this.doc) this.show(); } });
+    this.testing = true; studioStore.set({ testing: true });
+    return def;
   },
+  resume() {
+    if (!this.doc || !this.testing) return;
+    this.testing = false; this.show();
+  },
+  // Asks first, then publishes (or updates) the game. Resolves to {id, again} when it went live, else null.
   async publish() {
-    if (!this.doc) return;
-    if (!Caps.db) { toast('Publishing is not available here.', true); return; }
-    if (!Library.canPublish()) { toast(Me.id ? "Your account can't publish games here." : 'Sign in to claude.ai to publish games.', true); return; }
+    if (!this.doc || this.testing || studioStore.get().publishing) return null;
+    if (!Library.canPublish()) { toast(Caps.online ? 'Publishing is not available right now.' : 'Publishing needs the PlayForge server, which is not reachable right now.', true); return null; }
     const d = this.doc, again = !!d.publishedAt;
     const ok = await askChoice({
       title: again ? 'Update your game?' : 'Publish your game?',
-      body: again ? `Everyone will get the latest version of ${d.title}.` : `${d.title} will show up for everyone on the PlayForge home screen under New. You can unpublish it any time from its game page.`,
+      body: again ? `Everyone will get the latest version of ${d.title}.` : `${d.title} will show up for everyone on the PlayForge home screen under New, and anyone with its link can play it. You can unpublish it any time.`,
       buttons: [{ label: 'Not yet', value: false }, { label: again ? 'Update' : 'Publish', value: true, kind: 'ember' }],
     });
-    if (!ok || this.doc !== d) return;
-    this.cancelDrag(); d.thumb = this.thumb(); this.save(true);
-    const btn = $('#st-publish'); btn.disabled = true;
-    try { await Library.publish(d, d.thumb); toast(again ? 'Updated! Players get the new version next time they join.' : 'Published! Find it under New on the home screen.'); Sfx.play('win'); this.save(true); }
-    catch (e) {
+    if (ok !== true || this.doc !== d) return null;
+    this.cancelDrag();
+    if (World.scene && !this.testing) d.thumb = this.thumb();
+    this.save(true);
+    studioStore.set({ publishing: true });
+    try {
+      await Library.publish(d, d.thumb);
+      Sfx.play('win');
+      if (this.doc === d) { this.save(true); this.metaChanged(); }
+      return { id: d.id, again, title: d.title };
+    } catch (e) {
       const m = e && e.message;
-      toast(m === 'limit' ? `You can publish up to ${GAME_LIMITS.published} games. Unpublish one first.` : m === 'signin' ? 'Sign in to claude.ai to publish games.' : "Couldn't publish right now. Try again in a moment.", true);
-    } finally { btn.disabled = false; }
+      toast(m === 'limit' ? `You can publish up to ${GAME_LIMITS.published} games. Unpublish one first.`
+        : m === 'offline' ? "Can't reach PlayForge right now. Try again in a moment."
+          : m === 'invalid' ? "PlayForge didn't accept this game. Check its name and description, then try again."
+            : m === 'forbidden' ? 'This game belongs to another player, so it can’t be published from here.'
+              : m === 'rate_limited' ? 'That was a lot of publishing. Wait a moment, then try again.'
+                : m === 'signin' ? 'Publishing is not available right now.' : "Couldn't publish right now. Try again in a moment.", true);
+      return null;
+    } finally { studioStore.set({ publishing: false }); }
   },
 };

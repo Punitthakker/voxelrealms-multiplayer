@@ -58,9 +58,10 @@ function Players({ E, onReport }) {
                 {p.sameUser && <span className="chip">Your other tab</span>}
                 {p.guest && <span className="chip">Guest</span>}
                 {p.muted && <span className="chip muted">Muted</span>}
+                {p.away && <span className="chip">Away</span>}
               </div>
             </div>
-            {!p.me && (
+            {!p.me && !p.sameUser && (
               <div className="acts">
                 <button type="button" className="btn btn-sm" aria-label={`${p.muted ? 'Unmute' : 'Mute'} ${p.name}`} onClick={() => E.Net.toggleMute(p.id)}>
                   {p.muted ? 'Unmute' : 'Mute'}

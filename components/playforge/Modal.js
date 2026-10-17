@@ -5,7 +5,7 @@ import { Icon } from './Icon';
 // A sheet over a scrim (".modal > .sheet" from playforge.css). Escape and a scrim tap call onClose.
 // Several can stack; Escape closes only the top one.
 const stack = [];
-export function Modal({ open, onClose, title, titleId, className = '', role = 'dialog', closeLabel = 'Close', children, hideClose }) {
+export function Modal({ open, onClose, title, titleId, className = '', role = 'dialog', closeLabel = 'Close', children, hideClose, id: modalId }) {
   const ref = useRef(null), me = useRef({});
   useEffect(() => {
     if (!open) return;
@@ -19,7 +19,7 @@ export function Modal({ open, onClose, title, titleId, className = '', role = 'd
   if (!open) return null;
   const id = titleId || (title ? 'm-' + String(title).replace(/\W+/g, '-').toLowerCase() : undefined);
   return (
-    <div className="modal" onPointerDown={e => { if (e.target === e.currentTarget && onClose) onClose(); }}>
+    <div className="modal" id={modalId} onPointerDown={e => { if (e.target === e.currentTarget && onClose) onClose(); }}>
       <div className={`sheet ${className}`} role={role} aria-modal="true" aria-labelledby={id} ref={ref}>
         {(title || !hideClose) && (
           <div className="sheet-head">

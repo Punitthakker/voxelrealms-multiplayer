@@ -2,7 +2,8 @@
 // RoomClient has the same interface as the claude.ai room capability, so engine/net.js keeps its logic:
 //   name, presence(patch) -> Promise, emit(topic, data) -> Promise, on(topic, fn, onError) -> unsubscribe,
 //   onPeers(fn, onError) -> unsubscribe (fn gets {peers, joined, left, updated}), peers(), connected(),
-//   onConnection(fn, onError) -> unsubscribe (fn gets true / false), join(name) -> Promise<RoomClient>, leave() -> Promise.
+//   onConnection(fn, onError) -> unsubscribe (fn gets true / false), join(name, presence?) -> Promise<RoomClient>, leave() -> Promise.
+// join's optional presence goes out with the join message itself, so the room never sees this member without it.
 // Peers: {peer, by, isMe, sameTab, kind: 'viewer', guest: false, presence, updatedAt}.
 //
 // The socket reconnects by itself (1 s, 2 s, 4 s ... 15 s). A reconnecting page asks the server to hand it its
@@ -58,7 +59,9 @@ export class RoomClient {
     later(() => { if (this._connL.has(fn)) safe(fn, this.connected()); });
     return () => { this._connL.delete(fn); if (onError) this._errL.delete(onError); };
   }
-  join(name) { return this._c.join(name); }
+  join(name, presence) { return this._c.join(name, presence); }
+  // Sends a waiting presence change now instead of after the usual short delay (the page is being hidden).
+  flush() { if (this._left) return; if (this._sendTimer) { clearTimeout(this._sendTimer); this._sendTimer = 0; } this._flush(); }
   leave() {
     if (this._left) return Promise.resolve();
     this._left = true; clearTimeout(this._sendTimer); clearTimeout(this._joinTimer);
@@ -223,11 +226,12 @@ class Connection {
     const ev = { t: 'connected', reconnect: this.hellos > 1 };
     this.serverL.forEach(fn => safe(fn, ev));
   }
-  join(name) {
+  join(name, presence) {
     name = String(name);
     const cur = this.rooms.get(name);
-    if (cur && !cur._left) return cur._ready;
+    if (cur && !cur._left) { if (isObj(presence)) cur.presence(presence); return cur._ready; }
     const r = new RoomClient(this, name, name === 'lobby');
+    if (isObj(presence)) for (const k of Object.keys(presence)) if (presence[k] !== null && presence[k] !== undefined) r._presence[k] = presence[k];
     r._ready = new Promise((res, rej) => { r._resolve = res; r._reject = rej; });
     r._ready.catch(() => {}); // a failed join is reported to the caller that awaits it
     this.rooms.set(name, r);

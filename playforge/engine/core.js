@@ -52,9 +52,22 @@ export function saveSettings() { LS.set('pf.v1.settings', Settings); }
 
 /* ---------- 3. Sound (all synthesized) ---------- */
 export const Sfx = (() => {
-  let ctx = null, master = null, noiseBuf = null;
+  let ctx = null, master = null, noiseBuf = null, gestured = false;
+  // Browsers only let audio start after the player touched the page (a tap, click or key). Before that, sounds are
+  // skipped instead of creating an AudioContext that the browser refuses (and warns about in the console).
+  const UA = typeof navigator !== 'undefined' ? navigator.userActivation : null;
+  const allowed = () => gestured || !!(UA && UA.hasBeenActive);
+  function onGesture(e) {
+    if (e.type === 'keydown' && (e.key === 'Escape' || e.ctrlKey || e.metaKey)) return; // not a user activation
+    if (e.type === 'pointerdown' && e.pointerType !== 'mouse') return; // touch and pen activate on pointerup
+    gestured = true; ensure(); // create or resume inside the gesture (iOS Safari needs that)
+    if (ctx && ctx.state === 'running') GESTURES.forEach(t => window.removeEventListener(t, onGesture, true));
+  }
+  const GESTURES = ['pointerdown', 'pointerup', 'touchend', 'keydown'];
+  if (typeof window !== 'undefined') GESTURES.forEach(t => window.addEventListener(t, onGesture, { capture: true, passive: true }));
   function ensure() {
-    if (ctx) { if (ctx.state === 'suspended') ctx.resume().catch(() => {}); return ctx; }
+    if (ctx) { if (ctx.state === 'suspended' && allowed()) ctx.resume().catch(() => {}); return ctx; }
+    if (!allowed()) return null;
     const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return null;
     try { ctx = new AC(); } catch (e) { return null; }
     master = ctx.createGain(); master.gain.value = Settings.volume / 100; master.connect(ctx.destination);
@@ -149,7 +162,7 @@ export const Profile = {
   nick: '',                              // optional custom display name
   where: 'device',
   listeners: [],
-  onChange(fn) { this.listeners.push(fn); },
+  onChange(fn) { this.listeners.push(fn); return () => { const i = this.listeners.indexOf(fn); if (i >= 0) this.listeners.splice(i, 1); }; },
   emit() { this.listeners.forEach(fn => { try { fn(); } catch (e) { console.error(e); } }); },
   loadLocal() {
     const d = LS.get('pf.v1.profile', null);
@@ -175,7 +188,7 @@ export const Profile = {
       if (Number.isInteger(d.active)) this.active = clamp(d.active, 0, 4);
       if (typeof d.nick === 'string') this.nick = d.nick.slice(0, 20);
       this.where = 'cloud'; this.saveLocal();
-    } catch (e) { console.warn('PlayForge: profile read failed, using this device', e); }
+    } catch (e) { if (!e || e.status !== 0) console.warn('PlayForge: profile read failed, using this device', e); } // status 0: unreachable (offline, or the page is closing)
   },
   _chain: Promise.resolve(),
   // Saves to this device, then to the server when it is available. Resolves 'cloud' or 'device'.

@@ -1,0 +1,33 @@
+/* Home screen additions (components/playforge/home). The header, card, rows, tiles, heroes, results, game page and
+   text sheet use the original class names in playforge.css; this file only holds what the web app adds. */
+
+/* The boot card shows only when loading takes a moment (no flash when the engine is already there). */
+.pf-boot { animation: pf-boot-in .25s ease .2s both; }
+@keyframes pf-boot-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* Links styled as the original buttons and tiles (the avatar chip, Make a game, Play, Edit in Studio, Edit a copy). */
+#home a.me-chip, #home a.tile, #home a.btn, #gamepage-modal a.btn { box-sizing: border-box; text-decoration: none; color: var(--ink); }
+#home a.btn-ember, #gamepage-modal a.btn-ember { color: var(--on-ember); }
+.hero a.hero-play { color: var(--on-ember); }
+.me-chip { -webkit-touch-callout: none; }
+
+/* Game page: three action buttons fill one row on wide sheets; on phones the last one spans the second row. */
+.gp-more.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 520px) {
+  .gp-more.three { grid-template-columns: 1fr 1fr; }
+  .gp-more.three > :last-child { grid-column: 1 / -1; }
+}
+.gp-more .btn .n { flex: none; }
+/* Share or Copy link, over the picture opposite the close button. */
+.gp-share {
+  position: absolute; top: 10px; left: 10px; z-index: 4; height: 44px; box-sizing: border-box; display: inline-flex; align-items: center; gap: 7px;
+  padding: 0 15px 0 12px; border: 0; border-radius: 99px; background: rgba(13, 19, 33, .58); color: #F4F7FF; font-weight: 700; font-size: 14px;
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+}
+.gp-share:hover { background: rgba(13, 19, 33, .78); }
+.gp-share svg.i { width: 18px; height: 18px; }
+.gp-art .thumb.gp-pic { display: block; }
+
+/* One-line text sheet: the form lays out like the sheet it sits in. */
+#text-modal form { display: contents; }
+#text-modal .text-input[readonly] { font-family: var(--font-mono); font-size: 13px; }

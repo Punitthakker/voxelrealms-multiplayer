@@ -34,12 +34,13 @@ const cleanName = v => (typeof v === 'string' ? WordFilter.clean(v.replace(/\s+/
 export const colorFor = key => NAME_COLORS[hashStr(String(key)) % NAME_COLORS.length];
 
 //   inRoom: joined a game room (chat button, players list)    phase: 'off' | 'connecting' | 'live' | 'solo'
-//   lines: [{id, key, name, text, color, mine, system}]        players: [{id, key, me, name, host, guest, sameUser, muted, skin, ver}]
+//   lines: [{id, key, name, text, color, mine, system}]        players: [{id, key, me, name, host, guest, sameUser, muted, away, skin, ver}]
 export const netStore = createStore({
   inRoom: false, phase: 'off', status: '', lines: [], unread: 0, chatOpen: false, canChat: true, note: '', focusSeq: 0,
   players: [], count: 'Solo', empty: '', canReport: false, mutes: [],
 });
-//   live: the lobby is connected    counts: {gameId: players in that game right now}
+//   live: the lobby is connected right now (show "N online"; while false, hide the counts: they may be stale)
+//   counts: {gameId: players in that game right now}
 export const lobbyStore = createStore({ live: false, counts: {} });
 
 // Platform helpers the platform layer (playforge/client/platform.js) puts on Caps; the engine runs without them:
@@ -68,7 +69,7 @@ export class Remote {
     this.canvas = newSkinCanvas(); this.tex = makeSkinTexture(this.canvas); this.skinFromDb = false; this.st = -1; this.skinVer = 0;
     this.nick = ''; this.dbNick = ''; this.dbName = ''; this.pnm = ''; this.displayName = 'Player'; this.jt = Infinity; this.lastChat = 0; this.recent = [];
     this.samples = []; this.off = null; this.lastPr = null; this.t = 0; this.loadSeq = 0; this.disposed = false;
-    this.sc = 0; this.x = null; this.gs = null; this.gsn = -1; this.lastAct = -1;
+    this.sc = 0; this.x = null; this.gs = null; this.gsn = -1; this.lastAct = -1; this.away = false;
     this.avatar = createAvatar(this.tex, 'Player'); this.avatar.root.visible = false; if (World.scene) World.scene.add(this.avatar.root);
     this.setStarter(hashStr(this.peer) % STARTERS.length);
     this.ready = this.by ? this.loadProfile() : Promise.resolve();
@@ -108,6 +109,7 @@ export class Remote {
     const nk = cleanNick(pr.nk); if (nk !== this.nick) { this.nick = nk; this.refreshName(); }
     const nm = cleanNick(pr.nm); if (nm !== this.pnm) { this.pnm = nm; this.refreshName(); }
     if (Number.isFinite(pr.jt)) this.jt = pr.jt;
+    const away = pr.aw === 1; if (away !== this.away) { this.away = away; Net.playersDirty(); }
     this.sc = Number.isFinite(pr.sc) ? pr.sc : 0;
     this.x = pr.x && typeof pr.x === 'object' ? pr.x : null;
     if (pr.gs && typeof pr.gs === 'object' && Number.isFinite(pr.gsn)) { this.gs = pr.gs; this.gsn = pr.gsn; }
@@ -152,7 +154,7 @@ export class Remote {
 
 export const Net = {
   lobby: null, room: null, leaving: null, gameId: null, token: 0, joinedAt: 0, jt: 0, remotes: new Map(), myPeer: null, hostPeer: null,
-  lastSendAt: 0, lastSent: null, lines: [], lineSeq: 0, unread: 0, lastChatAt: 0, chatOpen: false, canChat: true, unsubs: [], lobbyPeers: [],
+  lastSendAt: 0, lastSent: null, lines: [], lineSeq: 0, unread: 0, lastChatAt: 0, chatOpen: false, canChat: true, unsubs: [], lobbyPeers: [], lobbyLive: false,
   mutes: new Set((LS.get('pf.v1.mutes', []) || []).filter(k => typeof k === 'string')), dirtyQueued: false, retried: false,
   discTimer: 0, noteTimer: 0, phase: 'off', focusSeq: 0, meVer: 0, started: false, downAt: 0, upAt: 0,
   // Once, at engine start-up (index.js): connects the lobby when the platform layer has one, and follows profile changes.
@@ -164,6 +166,7 @@ export const Net = {
       this.meVer++; this.updateIdentity(); this.playersDirty();
     });
     lobbyRoom().then(room => { if (room) this.initLobby(room); });
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', () => this.onVisibility());
     // A game that went solo because the server was away joins its room once the server answers again.
     let was = platformStore.get().connected;
     platformStore.subscribe(s => { const now = !!s.connected; if (now && !was) this.rejoinSolo(); was = now; });
@@ -179,6 +182,10 @@ export const Net = {
   initLobby(room) {
     if (this.lobby || !room) return; this.lobby = room;
     try { room.onPeers(ch => { this.lobbyPeers = (ch && ch.peers) || []; this.publishLobby(); }, () => { this.lobbyPeers = []; this.publishLobby(); }); } catch (e) { /* optional */ }
+    // The platform's lobby exists even while the server is away; it is live only while connected.
+    if (typeof room.onConnection === 'function') {
+      try { room.onConnection(c => { this.lobbyLive = !!c; this.publishLobby(); }, () => {}); } catch (e) { this.lobbyLive = true; }
+    } else this.lobbyLive = true;
     this.setLobbyGame(this.gameId);
     this.publishLobby();
   },
@@ -196,7 +203,7 @@ export const Net = {
       seen.add(g + '\n' + p.peer); counts[g] = (counts[g] || 0) + 1;
     }
     const prev = lobbyStore.get().counts;
-    lobbyStore.set({ live: true, counts: JSON.stringify(prev) === JSON.stringify(counts) ? prev : counts });
+    lobbyStore.set({ live: !!this.lobbyLive, counts: JSON.stringify(prev) === JSON.stringify(counts) ? prev : counts });
   },
 
   // ---- joining and leaving a game room ----
@@ -204,6 +211,7 @@ export const Net = {
   async join(gameId) {
     this.leave();
     const token = ++this.token; this.gameId = gameId; this.jt = Date.now(); this.joinedAt = performance.now(); this.canChat = true;
+    this.away = typeof document !== 'undefined' && !!document.hidden;
     this.setPhase('connecting');
     const lobby = await lobbyRoom();
     await this.leaving; // a quick rejoin must not get back the room that is still closing
@@ -213,7 +221,9 @@ export const Net = {
     // The platform already knows the server is unreachable: play solo now; start() joins when it answers.
     if (Caps.ready && Caps.online === false) { this.setPhase('solo'); return; }
     let r;
-    try { r = await lobby.join(gameId); }
+    // Who we are (with our join time) goes out with the join itself, so the players already in the room never
+    // see us without a join time (that would make both sides think they are the host for a moment).
+    try { r = await lobby.join(gameId, this.identity()); }
     catch (e) {
       if (token !== this.token) return;
       this.setPhase('solo');
@@ -221,8 +231,15 @@ export const Net = {
       else toast('Multiplayer is not available right now, so you are playing solo.');
       return;
     }
-    if (token !== this.token) { Promise.resolve(r.leave()).catch(() => {}); return; }
-    this.room = r; this.setLobbyGame(gameId);
+    if (token !== this.token) {
+      // A newer join of the same room gets this same room object: leave it only when nobody wants it any more.
+      if (this.room !== r && !(this.gameId === gameId && this.phase === 'connecting')) Promise.resolve(r.leave()).catch(() => {});
+      return;
+    }
+    this.room = r; this.joinedAt = performance.now(); this.setLobbyGame(gameId);
+    // Take in the players already here before anything else runs: until then this page would count itself
+    // alone in the room and act as the host. (The onPeers subscription below delivers them again; harmless.)
+    if (typeof r.peers === 'function') { const now = r.peers(); if (now.length) this.onPeers({ peers: now, joined: now, left: [], updated: [] }); }
     this.unsubs.push(r.onPeers(ch => this.onPeers(ch), e => this.onRoomLost(e, token)));
     this.unsubs.push(r.on('chat', m => this.onChat(m), () => {}));
     if (typeof r.onConnection === 'function') this.unsubs.push(r.onConnection(c => this.onConnection(c), () => {}));
@@ -336,23 +353,42 @@ export const Net = {
     this.unsubs.push(un);
   },
   // The earliest joiner hosts the shared game state; when they leave, the next earliest takes over.
+  // Players whose page is hidden (away) can't run the shared state, so they host only when everyone is away.
   electHost(announce) {
     if (!this.room) { this.hostPeer = null; return; }
-    let best = this.myPeer ? { peer: this.myPeer, jt: this.jt } : null;
-    for (const r of this.remotes.values()) if (!best || r.jt < best.jt || (r.jt === best.jt && r.peer < best.peer)) best = { peer: r.peer, jt: r.jt };
+    const all = [];
+    if (this.myPeer) all.push({ peer: this.myPeer, jt: this.jt, away: !!this.away });
+    for (const r of this.remotes.values()) all.push({ peer: r.peer, jt: r.jt, away: r.away });
+    const pool = all.some(c => !c.away) ? all.filter(c => !c.away) : all;
+    let best = null;
+    for (const c of pool) if (!best || c.jt < best.jt || (c.jt === best.jt && c.peer < best.peer)) best = c;
     const h = best ? best.peer : null;
     if (h === this.hostPeer) return;
     const had = this.hostPeer !== null; this.hostPeer = h;
     if (had && h && announce) this.system(h === this.myPeer ? 'You are the host now. Your game keeps the shared state running.' : `${(this.remotes.get(h) || {}).displayName || 'Someone'} is the host now`);
   },
   isHost() { return !this.room || !this.hostPeer || this.hostPeer === this.myPeer; },
+  // A hidden page stops its game loop, so it can't keep the shared state running: while hidden we tell the room we
+  // are away and the next player hosts. Coming back we take a new join time (the back of the queue), so hosting
+  // doesn't flip back to a page whose shared state went stale while it was hidden.
+  away: false,
+  onVisibility() {
+    const away = !!document.hidden;
+    if (away === this.away) return;
+    this.away = away;
+    if (!this.room) return; // a join on its way sends it with the identity
+    if (!away) this.jt = Date.now();
+    this.room.presence(away ? { aw: 1 } : { aw: null, jt: this.jt }).catch(() => {});
+    if (typeof this.room.flush === 'function') this.room.flush(); // a phone may freeze the page right after this
+    this.electHost(true); this.playersDirty();
+  },
   checkFull() {
     const ahead = [...this.remotes.values()].filter(r => r.jt < this.jt || (r.jt === this.jt && r.peer < (this.myPeer || ''))).length;
     if (ahead >= MAX_PLAYERS) { toast(`${this.title()} is full (${MAX_PLAYERS} players). Try again soon.`, true); Game.leave(); }
   },
 
   // ---- presence: who I am plus position and rotation, about 10 times a second ----
-  identity() { return { v: 1, uid: Me.id || null, nk: Profile.nick || null, nm: Profile.displayName() || null, st: defaultStarterIndex(), jt: this.jt, sc: this.score || 0 }; },
+  identity() { return { v: 1, uid: Me.id || null, nk: Profile.nick || null, nm: Profile.displayName() || null, st: defaultStarterIndex(), jt: this.jt, sc: this.score || 0, aw: this.away ? 1 : null }; },
   score: 0, pubJson: 'null',
   setScore(n) { n = Number(n) || 0; if (n === this.score) return; this.score = n; if (this.room) this.room.presence({ sc: n }).catch(() => {}); },
   // Small per-mode data other players can read through Game.others()[i].x (health, team, carrying...).
@@ -419,7 +455,9 @@ export const Net = {
   onChat(m) {
     if (m.sameTab) return; // already shown when sent
     const r = this.remotes.get(m.peer); if (!r) return;
-    const now = Date.now(); if (now - r.lastChat < 800) return; r.lastChat = now;
+    // The server already holds everyone to one message a second, and network jitter can bring two of them closer
+    // together on the way here: only drop what arrives in a burst.
+    const now = Date.now(); if (now - r.lastChat < 300) return; r.lastChat = now;
     const raw = m.data && typeof m.data.text === 'string' ? m.data.text : '';
     const text = WordFilter.clean(raw.replace(/\s+/g, ' ').trim().slice(0, CHAT_MAX)); if (!text) return;
     r.recent.push(text); if (r.recent.length > 5) r.recent.shift();
@@ -447,8 +485,8 @@ export const Net = {
     this.dirtyQueued = false;
     const room = !!this.room, test = !!(Game.opts && Game.opts.test);
     const others = [...this.remotes.values()].sort((a, b) => a.jt - b.jt || (a.peer < b.peer ? -1 : a.peer > b.peer ? 1 : 0));
-    const rows = [{ id: 'me', key: 'me', me: true, name: Profile.displayName(), host: room && this.isHost(), guest: false, sameUser: false, muted: false, skin: Skins.worn, ver: this.meVer }];
-    for (const r of others) rows.push({ id: r.peer, key: r.key, me: false, name: r.displayName, host: room && this.hostPeer === r.peer, guest: r.guest, sameUser: r.sameUser, muted: this.mutes.has(r.key), skin: r.canvas, ver: r.skinVer });
+    const rows = [{ id: 'me', key: 'me', me: true, name: Profile.displayName(), host: room && this.isHost(), guest: false, sameUser: false, muted: false, away: false, skin: Skins.worn, ver: this.meVer }];
+    for (const r of others) rows.push({ id: r.peer, key: r.key, me: false, name: r.displayName, host: room && this.hostPeer === r.peer, guest: r.guest, sameUser: r.sameUser, muted: this.mutes.has(r.key), away: r.away, skin: r.canvas, ver: r.skinVer });
     const empty = others.length ? ''
       : test ? 'Test runs are solo. Publish your game and friends can play it with you.'
       : room ? 'Nobody else is here yet. Share the link to this game and friends who open it can join you.'

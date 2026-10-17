@@ -1,5 +1,5 @@
 'use client';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { IconSprite } from './Icon';
 import { Modal } from './Modal';
 import { useEngine } from './engine';
@@ -29,7 +29,9 @@ export default function Shell({ children }) {
 
 function Toast({ store }) {
   const t = useStore(store, s => s.toast);
-  return <div id="toast" role="status" aria-live="polite" className={(t ? 'show' : '') + (t && t.warn ? ' warn' : '')}>{t ? t.msg : ''}</div>;
+  const last = useRef(null); if (t) last.current = t; // the message stays while the toast fades out
+  const m = t || last.current;
+  return <div id="toast" role="status" aria-live="polite" className={(t ? 'show' : '') + (m && m.warn ? ' warn' : '')}>{m ? m.msg : ''}</div>;
 }
 
 function Choice({ store }) {
