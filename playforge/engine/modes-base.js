@@ -15,7 +15,10 @@ import { Modes, registerGames } from './game.js';
 //   onShared(state, G)          non-hosts, when the host's state changes
 //   onAct(from, kind, data, G)  every client, for every Shared.act() in the room (including your own)
 // Mode properties: camera ('follow' | 'shoulder'), hp (show health), board (scores leaderboard), boardAsc, boardTitle, hint, defaults.
-Modes.free = { label: 'Explore' };
+Modes.free = {
+  label: 'Explore',
+  setup(G) { G.hud.objective(G.modeOpts.objective || 'Explore and have fun'); },
+};
 
 // Studio games: part behaviors carry the rules. Shows time, coins, and an optional time limit (modeOpts.timeLimit seconds).
 Modes.custom = {

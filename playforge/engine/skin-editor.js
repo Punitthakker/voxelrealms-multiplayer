@@ -21,7 +21,7 @@ const STASH_KEY = 'pf.v2.avatar.draft';
 const RECENT_KEY = 'pf.v1.recent';
 const UNDO_MAX = 60;
 const MAP_CAPTION = 'Skin map · 64 × 64';
-const HINT_PAINT = IS_TOUCH ? 'Paint on the avatar · drag the background to turn it' : 'Paint on the avatar · drag the background to turn it';
+const HINT_PAINT = IS_TOUCH ? 'Paint on the avatar · drag the background to turn it' : 'Paint on the avatar · drag the background to turn it · scroll to zoom';
 const HINT_TURN = 'Turn mode: drag anywhere to turn the avatar';
 const NICK_HELP = 'Shown on the nametag above your head. 3 to 20 letters, numbers, spaces, dots, dashes or underscores.';
 const TOOL_KEYS = { b: 'pencil', p: 'pencil', e: 'eraser', g: 'bucket', f: 'bucket', i: 'picker' };
@@ -61,7 +61,7 @@ export const Editor = {
   tool: 'pencil', lastPaintTool: 'pencil', size: 1, mirror: false, grid: true, layer: 'base', rotateTool: false, tab: 'paint',
   color: '#FF6A2B', recent: [], undo: [], redo: [], dirty: false, saving: 0, slot: 0, thumbs: new Set(), thumbDirty: false,
   yaw: 0.55, pitch: 0.1, dist: 5, drag: null, pts: new Map(), pinchD: 0, stroke: null, mapDirty: true, t: 0, hover: null,
-  mapBg: null, colors: {}, lastSfx: 0, busy: false, loadTok: 0, selfEmit: false, asking: null,
+  mapBg: null, colors: {}, lastSfx: 0, busy: false, loadTok: 0, selfEmit: false, asking: null, ready: false, entering: false, missed: false, lastWhere: '',
   view: null, map: null, panel: null, blocked: () => false, onBack: null,
 
   init() {
@@ -105,10 +105,11 @@ export const Editor = {
     const pts = this.pts;
     const d2 = () => { const p = [...pts.values()]; return Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y); };
     on(view, 'pointerdown', e => {
-      if (!this.open) return;
+      if (!this.open || !this.ready) return;
       e.preventDefault(); try { view.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
       pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      if (pts.size >= 2) { this.endStroke(); this.drag = 'pinch'; this.pinchD = d2(); return; }
+      // A second finger means pinch and turn: the dab the first finger made a moment ago was not meant as paint.
+      if (pts.size >= 2) { if (!this.cancelStroke(320)) this.endStroke(); this.drag = 'pinch'; this.pinchD = d2(); return; }
       if (e.button === 1 || e.button === 2 || this.rotateTool) { this.drag = 'rotate'; return; }
       const hit = this.pick3D(e.clientX, e.clientY);
       if (hit) { this.drag = 'paint'; this.act(hit.x, hit.y, hit.rect); this.setHover([hit.x, hit.y]); } else this.drag = 'rotate';
@@ -155,16 +156,24 @@ export const Editor = {
     this.init();
     this.map = canvas; this.panel = panel;
     const offs = [], on = (t, ev, fn, o) => { t.addEventListener(ev, fn, o); offs.push(() => t.removeEventListener(ev, fn, o)); };
+    let mapPtr = null; // the pointer painting on the map (other fingers are ignored)
     on(canvas, 'pointerdown', e => {
-      if (!this.open) return;
+      if (!this.open || !this.ready || !e.isPrimary) return;
       e.preventDefault(); const p = this.mapPixel(e); if (!p) return;
       try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
       const info = PIX[p[1] * SK + p[0]]; if (info && info.layer !== this.layer) this.setLayer(info.layer, true);
-      this.act(p[0], p[1], null); this.setHover(p);
+      mapPtr = e.pointerId; this.act(p[0], p[1], null); this.setHover(p);
     });
-    on(canvas, 'pointermove', e => { if (!this.open) return; const p = this.mapPixel(e); this.setHover(p); if (p && this.stroke) this.strokeTo(p[0], p[1], null); });
-    const up = e => { this.endStroke(); if (e.pointerType !== 'mouse') this.setHover(null); };
-    on(canvas, 'pointerup', up); on(canvas, 'pointercancel', up);
+    on(canvas, 'pointermove', e => {
+      if (!this.open) return;
+      if (mapPtr !== null ? e.pointerId !== mapPtr : e.pointerType !== 'mouse') return;
+      const p = this.mapPixel(e); this.setHover(p); if (p && this.stroke) this.strokeTo(p[0], p[1], null);
+    });
+    const up = e => {
+      if (mapPtr === null || e.pointerId !== mapPtr) return;
+      mapPtr = null; this.endStroke(); if (e.pointerType !== 'mouse') this.setHover(null);
+    };
+    on(canvas, 'pointerup', up); on(canvas, 'pointercancel', up); on(canvas, 'lostpointercapture', up);
     on(canvas, 'pointerleave', e => { if (e.pointerType === 'mouse' && !this.stroke) this.setHover(null); });
     on(canvas, 'contextmenu', e => e.preventDefault());
     const ro = new ResizeObserver(() => this.sizeMap()); ro.observe(panel);
@@ -184,7 +193,8 @@ export const Editor = {
   // ---- entering and leaving ----
   async enter() {
     this.init();
-    this.open = true; this.endStroke(); this.hover = null; this.drag = null; this.pts.clear();
+    this.open = true; this.ready = false; this.entering = true; this.missed = false;
+    this.endStroke(); this.hover = null; this.drag = null; this.pts.clear();
     this.yaw = 0.55; this.pitch = 0.1; this.dist = 5;
     Engine.setMode('avatar'); if (this.view) Engine.attach(this.view);
     this.avatar.setName(Profile.displayName());
@@ -200,10 +210,13 @@ export const Editor = {
         this.slot = clamp(stash.slot | 0, 0, 4); this.putWork(tmp); restored = true;
       }
     }
-    if (!restored) {
-      this.slot = Profile.active;
+    // The profile can change while the slot loads (the server's copy arrives at start-up): load again until it holds.
+    for (let i = 0; !restored && i < 3; i++) {
+      this.missed = false; this.slot = Profile.active;
       const r = await this.loadSlot(this.slot); if (!r || !this.open) return;
+      if (!this.missed) break;
     }
+    this.entering = false; this.ready = true;
     this.undo = []; this.redo = []; this.updateUndo(); this.afterChange();
     this.setDirty(restored); this.syncSlots();
     editorStore.set({ ready: true });
@@ -215,7 +228,7 @@ export const Editor = {
     if (!this.open) return;
     this.endStroke(); this.stash();
     if (this.asking) { const c = uiStore.get().choice; if (c && c === this.asking) c.resolve('cancel'); this.asking = null; }
-    this.open = false; this.loadTok++; this.busy = false; this.pts.clear(); this.drag = null; this.hover = null;
+    this.open = false; this.ready = false; this.entering = false; this.loadTok++; this.busy = false; this.pts.clear(); this.drag = null; this.hover = null;
     if (Engine.mode === 'avatar') Engine.setMode('home');
     editorStore.set({ open: false, ready: false });
   },
@@ -261,7 +274,7 @@ export const Editor = {
   putWork(src) { this.g.clearRect(0, 0, SK, SK); this.g.drawImage(src, 0, 0); this.afterChange(); },
 
   async save() {
-    if (!this.open) return;
+    if (!this.open || !this.ready) return;
     this.endStroke();
     const png = this.work.toDataURL('image/png'), slot = this.slot;
     Profile.slots[slot] = png; Profile.active = slot; Skins.setFrom(this.work);
@@ -269,19 +282,23 @@ export const Editor = {
     this.saving++; this.setDirty(false); this.syncSlots(); Sfx.play('save');
     this.emitProfile();
     let where = 'device';
-    try { where = await Profile.persist(); } finally { this.saving = Math.max(0, this.saving - 1); this.setDirty(this.dirty); }
+    try { where = await Profile.persist(); } finally { this.lastWhere = where; this.saving = Math.max(0, this.saving - 1); this.setDirty(this.dirty); }
     toast(where === 'cloud' ? `Saved to slot ${slot + 1}. Other players will see this skin.` : `Saved to slot ${slot + 1} on this device.`);
   },
   setDirty(d) {
     this.dirty = !!d;
-    const status = this.dirty ? 'Unsaved changes' : this.saving ? 'Saving…' : Profile.where === 'cloud' ? 'Saved' : 'Saved on this device';
+    // 'Saved' when saves reach the server (it answers, and the last save got there), else 'Saved on this device'.
+    const cloud = this.lastWhere ? this.lastWhere === 'cloud' : Profile.where === 'cloud' || !!(Caps.online && Profile.backend);
+    const status = this.dirty ? 'Unsaved changes' : this.saving ? 'Saving…' : cloud ? 'Saved' : 'Saved on this device';
     editorStore.set({ dirty: this.dirty, status, saving: !!this.saving });
   },
   // Tells the rest of the app (home card, nametags, the room) about a new skin or name, without reloading the editor.
   emitProfile() { this.selfEmit = true; try { Profile.emit(); } finally { this.selfEmit = false; } },
   onProfileChanged() {
     if (this.selfEmit || !this.inited) return;
+    this.lastWhere = ''; // the platform (re)connected or the profile came from the server
     this.avatar.setName(Profile.displayName()); this.syncName();
+    if (this.entering) { this.missed = true; this.syncSlots(); return; } // enter() loads again
     if (this.open && !this.dirty && !this.stroke && !this.busy) {
       this.slot = Profile.active;
       this.loadSlot(this.slot).then(r => {
@@ -305,7 +322,14 @@ export const Editor = {
     this.endStroke(); if (!this.open || !this.redo.length) return;
     this.undo.push(this.snap()); this.g.putImageData(this.redo.pop(), 0, 0); this.afterChange(); this.setDirty(true); this.updateUndo(); Sfx.play('click');
   },
-  beginStroke() { this.endStroke(); this.stroke = { snap: this.snap(), last: null, clip: null, changed: false }; },
+  beginStroke() { this.endStroke(); this.stroke = { snap: this.snap(), last: null, clip: null, changed: false, t0: performance.now() }; },
+  // Takes back a stroke younger than maxAge ms (a pinch that started with one finger). True when it did.
+  cancelStroke(maxAge) {
+    const s = this.stroke; if (!s || performance.now() - s.t0 > maxAge) return false;
+    this.stroke = null;
+    if (s.changed) { this.g.putImageData(s.snap, 0, 0); this.afterChange(); }
+    return true;
+  },
   endStroke() {
     const s = this.stroke; if (!s) return; this.stroke = null;
     if (s.changed) { this.pushUndo(s.snap); this.setDirty(true); }
@@ -340,10 +364,10 @@ export const Editor = {
     const now = performance.now(); if (now - this.lastSfx > 80) { this.lastSfx = now; Sfx.play('paint'); }
   },
   setPx(x, y) {
-    const g = this.g;
+    const g = this.g, info = PIX[y * SK + x];
+    if (!info) return; // the unused parts of the map stay empty
     if (this.tool === 'eraser') {
-      const info = PIX[y * SK + x];
-      if (info && info.layer === 'base') { g.fillStyle = BLANK; g.fillRect(x, y, 1, 1); } else g.clearRect(x, y, 1, 1);
+      if (info.layer === 'base') { g.fillStyle = BLANK; g.fillRect(x, y, 1, 1); } else g.clearRect(x, y, 1, 1);
     } else { g.fillStyle = this.color; g.fillRect(x, y, 1, 1); }
     if (this.stroke) this.stroke.changed = true;
   },
@@ -377,7 +401,7 @@ export const Editor = {
     this.setTool(this.lastPaintTool === 'eraser' ? 'pencil' : this.lastPaintTool); Sfx.play('pick');
   },
   applyWhole(src, msg) {
-    if (!this.open) return;
+    if (!this.open || !this.ready) return;
     this.endStroke(); const before = this.snap();
     this.putWork(src);
     this.pushUndo(before); this.setDirty(true); Sfx.play('fill'); if (msg) toast(msg);
@@ -415,7 +439,8 @@ export const Editor = {
   setColor(hex, remember) {
     const h = normHex(hex); if (!h) return;
     this.color = h; editorStore.set({ color: h });
-    if (this.tool === 'eraser' || this.tool === 'picker') this.setTool('pencil');
+    // A new color means painting: the eraser gives way to the pencil, the eyedropper to the tool you had before it.
+    if (this.tool === 'eraser' || this.tool === 'picker') this.setTool(this.lastPaintTool === 'eraser' ? 'pencil' : this.lastPaintTool);
     if (remember) this.remember(h);
   },
   // The hex field: true when the text was a color.
@@ -439,7 +464,7 @@ export const Editor = {
   // ---- slots ----
   async selectSlot(i) {
     i = clamp(i | 0, 0, 4);
-    if (!this.open || i === this.slot || this.busy) return;
+    if (!this.open || !this.ready || i === this.slot || this.busy) return;
     this.endStroke();
     this.busy = true;
     try {
@@ -456,7 +481,7 @@ export const Editor = {
       if (r.had) {
         Profile.active = i; Skins.setFrom(this.work); this.setDirty(false); this.syncSlots(); this.emitProfile();
         this.saving++; this.setDirty(false);
-        Profile.persist().finally(() => { this.saving = Math.max(0, this.saving - 1); this.setDirty(this.dirty); });
+        Profile.persist().then(w => { this.lastWhere = w; }).finally(() => { this.saving = Math.max(0, this.saving - 1); this.setDirty(this.dirty); });
         toast(`Wearing slot ${i + 1}`);
       } else { this.setDirty(true); toast(`Slot ${i + 1} is empty. It starts as a copy of your current skin. Save to keep it.`); }
       this.syncSlots(); Sfx.play('click');
@@ -465,7 +490,7 @@ export const Editor = {
 
   // ---- import and download ----
   importFile(f) {
-    if (!f || !this.open) return;
+    if (!f || !this.open || !this.ready) return;
     const url = URL.createObjectURL(f), img = new Image();
     img.onload = () => {
       URL.revokeObjectURL(url);
@@ -505,7 +530,7 @@ export const Editor = {
     this.syncName(); this.avatar.setName(Profile.displayName());
     this.emitProfile(); // the in-game nametag, the home card and the room use the new name
     Sfx.play('save');
-    const where = await Profile.persist();
+    const where = await Profile.persist(); this.lastWhere = where;
     if (this.open) this.setDirty(this.dirty);
     toast((v ? `Name saved: ${v}` : `Using your guest name, ${baseName()}`) + (where === 'cloud' ? '' : ' (on this device)'));
     return true;

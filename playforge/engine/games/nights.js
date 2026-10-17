@@ -3,7 +3,7 @@ import { DEG, LS, SK, Sfx, clamp, ctx2d, newSkinCanvas, pick, rng } from '../cor
 import { ENV, World, mkPart } from '../world.js';
 import { fmtClock, fmtTime } from '../hud.js';
 import { Game, Modes, getBest, registerGames, saveBest } from '../game.js';
-import { Shared } from '../net.js';
+import { Net, Shared } from '../net.js';
 import { PartyKit } from './party.js';
 
 /* ---------- Games: campfire survival (99 Nights at Pinewood and friends), Shade Hunt, Lantern Trail ---------- */
@@ -12,9 +12,9 @@ export const DEEP_NIGHT = { top: '#03050C', horizon: '#0A1022', bottom: '#04060C
 export const NIGHT_THEMES = {
   forest: { day: 'forest', win: 'The forest is quiet at last', ground: '#3F6B3A', groundMat: 'grass', trunk: '#6B4A2E', crown: ['#2C5A3A', '#356B44', '#2F7A55'], kind: 'pine', bush: '#2F6B3A', berry: '#E23E62', rock: '#7D8794', clearing: '#8A6A45', tent: ['#FF6A2B', '#2D62F0', '#FFC53A', '#17A39C'] },
   snow: { day: 'snow', win: 'The storm is over and the island is calm', ground: '#EEF3F8', groundMat: 'sand', trunk: '#5A4030', crown: ['#2F5A48', '#3A6A55'], kind: 'pine', snowcap: true, bush: '#3A5A4A', berry: '#7A4FD0', rock: '#9AA8B8', clearing: '#C9D6E2', tent: ['#E23E62', '#2D62F0', '#FF6A2B', '#7A4FD0'] },
-  desert: { day: 'desert', win: 'The dunes are quiet at last', ground: '#E2C48E', groundMat: 'sand', trunk: '#5E8F4A', kind: 'cactus', bush: '#7A8A4A', berry: '#FF5CA8', rock: '#B08A5E', clearing: '#C9A66E', tent: ['#FF6A2B', '#17A39C', '#E23E62', '#2D62F0'] },
+  desert: { day: 'desert', win: 'The dunes are quiet at last', logFuel: 8, ground: '#E2C48E', groundMat: 'sand', trunk: '#5E8F4A', kind: 'cactus', bush: '#7A8A4A', berry: '#FF5CA8', rock: '#B08A5E', clearing: '#C9A66E', tent: ['#FF6A2B', '#17A39C', '#E23E62', '#2D62F0'] },
 };
-// Fuel one log adds to the campfire (percent).
+// Fuel one log adds to the campfire (percent). A theme can change it (logFuel): cactus wood burns faster.
 const LOG_FUEL = 10;
 const cap1 = s => s.charAt(0).toUpperCase() + s.slice(1);
 // A soft pool of lantern light on the ground that follows the player. The big lawn and forest-floor boxes have
@@ -117,13 +117,15 @@ Modes.nights = {
   defaults: { nights: 99, theme: 'forest', day: 45, night: 55, creature: 'the Gloom', campers: 4 },
   setup(G) {
     const o = G.modeOpts, T = NIGHT_THEMES[o.theme] || NIGHT_THEMES.forest;
-    this.theme = T; this.dayEnv = ENV[T.day] || ENV.day; this.saveKey = 'pf.v1.nights.' + G.def.id; this.cycle = o.day + o.night;
-    this.c = 3; this.survived = 0; this.fuel = 70; this.logs = 0; this.cap = 6; this.food = 100; this.useCool = 0; this.skyKey = ''; this.dead = false;
-    this.chops = new Map(); this.down = new Map(); this.eaten = new Map(); this.rescued = new Set(); this.choosing = false; this.respawnT = 0; this.warned = false;
-    // Multiplayer bookkeeping: synced = we have mirrored a host's camp; joinedRun = that camp is not our saved run,
-    // so it must never be saved over it; mine = things we changed locally a moment ago (the host's state may not
-    // include them yet, so don't undo them); lastCtx = the action button and prompt last written.
-    this.synced = false; this.joinedRun = false; this.loaded = false; this.mine = new Map(); this.lastCtx = null; this.lastWhy = null;
+    this.theme = T; this.logFuel = T.logFuel || LOG_FUEL; this.dayEnv = ENV[T.day] || ENV.day; this.saveKey = 'pf.v1.nights.' + G.def.id; this.cycle = o.day + o.night;
+    this.c = 3; this.survived = 0; this.fuel = 70; this.logs = 0; this.cap = 6; this.food = 100; this.useCool = 0; this.skyKey = ''; this.near = false; this.edgeT = -9;
+    this.chops = new Map(); this.down = new Map(); this.eaten = new Map(); this.rescued = new Set(); this.choosing = false; this.ask = null; this.respawnT = 0; this.warned = false;
+    this.hudT = 0; this.ctxT = 0; this.lastCtx = null;
+    // Multiplayer bookkeeping. synced: we have mirrored a host's camp. hostedRoom: other players were in our camp
+    // while we hosted it (so a later sync is still our own run). joinedRun: the camp we mirror is someone else's
+    // run, so it is never saved over our own saved run. mine: things we changed a moment ago that the host's
+    // state may not show yet (key -> game time until which we trust our own value).
+    this.synced = false; this.hostedRoom = false; this.joinedRun = false; this.mine = new Map();
     // Index trees and bushes by number so a whole tree (trunk and crown) can vanish and grow back.
     this.trees = new Map(); this.bushes = new Map();
     for (const p of World.parts) {
@@ -148,37 +150,54 @@ Modes.nights = {
     G.addAction({ id: 'use', label: 'Use', icon: 'hand', key: 'KeyE', keyLabel: 'E', primary: true, onDown: () => this.use(G) });
     G.hud.objective(`Survive ${o.nights} nights. Keep the fire burning`);
     this.hud(G);
-    const sv = LS.get(this.saveKey, null);
-    this.ownSave = sv && sv.s > 0 ? sv : null;
-    if (sv && sv.s > 0 && sv.s < o.nights) this.askContinue(G, sv);
+    const sv = this.readSave();
+    this.ownSave = sv;
+    if (sv && sv.s < o.nights) this.askContinue(G, sv);
   },
   groupOf(map, k) { let g = map.get(k); if (!g) { g = { trunk: null, ids: [] }; map.set(k, g); } return g; },
-  teardown(G) { this.hidePanel(G); if (this.light && this.light.parent) this.light.parent.remove(this.light); this.light = null; },
+  teardown(G) { this.hidePanel(G); this.choosing = false; this.ask = null; if (this.light && this.light.parent) this.light.parent.remove(this.light); this.light = null; },
+  readSave() { const sv = LS.get(this.saveKey, null); return sv && typeof sv === 'object' && (sv.s | 0) > 0 ? sv : null; },
+  // Remember that we changed something just now, so the host's slightly older state doesn't undo it.
+  mark(key, sec = 2.5) { this.mine.set(key, Game.t + sec); },
+  fresh(key) { const t = this.mine.get(key); return t !== undefined && t > Game.t; },
+  // "Continue your saved run?" The options appear once we know whether we are joining someone else's camp:
+  // a guest follows the host's camp, so their own save is neither loaded into it nor overwritten.
   askContinue(G, sv) {
-    this.choosing = true; G.frozen = true;
-    G.hud.panel({
-      title: 'Welcome back to camp', text: `Your saved run reached dawn after night ${sv.s}.`,
-      options: [{ id: 'continue', title: `Continue at night ${sv.s + 1}`, blurb: 'Pick up where you left off', on: true }, { id: 'new', title: 'New run', blurb: 'Start again from night 1', on: false }],
-      onPick: id => {
-        if (!this.choosing) return;
-        if (id === 'continue') this.load(sv, G); else { LS.set(this.saveKey, null); this.ownSave = null; }
-        this.closePanel(G);
-      },
+    this.choosing = true; G.frozen = true; this.ask = { sv, t: 0, ready: false };
+    G.hud.panel({ title: 'Welcome back to camp', text: 'Looking for other campers…', options: [], onPick: id => this.pick(id, G) });
+  },
+  waitChoice(dt, G) {
+    const a = this.ask; if (!a || a.ready) return;
+    a.t += dt;
+    const ph = Net.phase, known = (ph === 'solo' && a.t > 0.2) || (ph === 'off' && a.t > 0.8) || (ph === 'live' && Shared.isHost() && a.t > 0.3) || a.t > 4;
+    if (!known) return;
+    a.ready = true;
+    G.hud.updatePanel({
+      text: `Your saved run reached dawn after night ${a.sv.s}.`,
+      options: [{ id: 'continue', key: '1', title: `Continue at night ${a.sv.s + 1}`, blurb: 'Pick up where you left off', on: true }, { id: 'new', key: '2', title: 'New run', blurb: 'Start again from night 1', on: false }],
     });
   },
+  pick(id, G) {
+    const a = this.ask; if (!this.choosing || !a || !a.ready) return;
+    if (id === 'continue') this.load(a.sv, G);
+    else if (id === 'new') { LS.set(this.saveKey, null); this.ownSave = null; }
+    else return;
+    this.closePanel(G);
+  },
   hidePanel(G) { if (G) G.hud.closePanel(); },
-  closePanel(G) { this.hidePanel(G); this.choosing = false; G.frozen = false; Sfx.play('click'); this.hud(G); },
+  closePanel(G) { this.hidePanel(G); this.choosing = false; this.ask = null; G.frozen = false; Sfx.play('click'); this.hud(G); },
   load(sv, G) {
-    this.loaded = true;
-    this.survived = sv.s | 0; this.fuel = clamp(+sv.f || 60, 20, 100); this.logs = clamp(sv.l | 0, 0, 20); this.food = clamp(+sv.fo || 80, 30, 100);
-    for (const name of sv.r || []) { const b = this.campers.find(c => c.name === name); if (b) this.rescue(b, G, 'quiet'); }
+    this.survived = clamp(sv.s | 0, 0, G.modeOpts.nights - 1); this.fuel = clamp(+sv.f || 60, 20, 100); this.food = clamp(+sv.fo || 80, 30, 100);
+    for (const name of Array.isArray(sv.r) ? sv.r : []) { const b = this.campers.find(c => c.name === name); if (b) this.rescue(b, G, 'quiet'); }
+    this.logs = clamp(sv.l | 0, 0, this.cap);
     G.hud.flash(`Night ${this.survived + 1}`, 'info', 1500);
   },
-  // Saves the camp at dawn and on rescues. Only the host saves; a camp you joined never replaces your own saved
-  // run; and nothing is saved while the "continue your run?" choice is still open.
+  // Saves the camp at dawn and on rescues. Only the host saves, a camp you joined never replaces your own saved
+  // run, and nothing is saved while the "continue your run?" choice is still open.
   save() {
     if (!Shared.isHost() || this.choosing || this.joinedRun) return;
-    LS.set(this.saveKey, { s: this.survived, f: Math.round(this.fuel), l: this.logs, fo: Math.round(this.food), r: [...this.rescued], at: Date.now() });
+    this.ownSave = { s: this.survived, f: Math.round(this.fuel), l: this.logs, fo: Math.round(this.food), r: [...this.rescued], at: Date.now() };
+    LS.set(this.saveKey, this.ownSave);
   },
   safeR() { return this.fuel > 0 ? 5 + 13 * (this.fuel / 100) : 0; },
   isNight() { const o = Game.modeOpts; return this.c >= o.day - 3 && this.c < this.cycle - 2; },
@@ -194,16 +213,22 @@ Modes.nights = {
     const o = G.modeOpts, D = o.day, day = this.c < D;
     G.hud.stat('night', `Night ${Math.min(o.nights, this.survived + 1)} / ${o.nights}`, { icon: 'moon', label: 'Night' });
     const left = day ? D - this.c : this.cycle - this.c;
-    G.hud.stat('cycle', (day ? 'Night in ' : 'Dawn in ') + fmtClock(left), { icon: day ? 'sun' : 'moon', label: day ? 'Time until night' : 'Time until dawn', warn: day && left < 10 });
+    G.hud.stat('cycle', (day ? 'Night in ' : 'Dawn in ') + fmtClock(left), { icon: day ? 'sun' : 'moon', label: 'Time', warn: day && left < 10 });
     G.hud.stat('fire', this.fuel > 0 ? Math.ceil(this.fuel) + '%' : 'Out!', { icon: 'fire', label: 'Fire', warn: this.fuel < 20 });
     G.hud.stat('logs', `${this.logs} / ${this.cap}`, { icon: 'log', label: 'Logs' });
     G.hud.stat('food', String(Math.ceil(this.food)), { icon: 'berry', label: 'Food', warn: this.food < 20 });
     if (this.campers.length) G.hud.stat('campers', `${this.rescued.size} / ${this.campers.length}`, { icon: 'users', label: 'Campers rescued' });
   },
   // ---- actions ----
+  fireFull() { return this.fuel > 100 - this.logFuel / 2; },
+  // Logs that fit in the fire right now (never more than you carry).
+  feedCount() { return Math.min(this.logs, Math.max(1, Math.ceil((100 - this.fuel) / this.logFuel))); },
   context(G) {
     const b = G.body.pos;
-    if (Math.hypot(b.x, b.z) < 4.3 && this.logs > 0) return { kind: 'feed', label: 'Feed fire', icon: 'fire', prompt: `Feed ${this.logs} log${this.logs > 1 ? 's' : ''} to the fire` };
+    if (Math.hypot(b.x, b.z) < 4.3 && this.logs > 0) {
+      if (this.fireFull()) return { kind: 'feed', full: true, label: 'Feed fire', icon: 'fire', prompt: 'The fire is full' };
+      const n = this.feedCount(); return { kind: 'feed', label: 'Feed fire', icon: 'fire', prompt: `Feed ${n} log${n > 1 ? 's' : ''} to the fire` };
+    }
     const bush = G.near('bush', 1.5)[0];
     if (bush && !this.eaten.has(bush.part.bp.k)) return { kind: 'eat', k: bush.part.bp.k, label: 'Eat', icon: 'berry', prompt: this.food > 95 ? "You're full" : 'Eat the berries' };
     const tree = G.near('tree', 1.4)[0];
@@ -215,7 +240,8 @@ Modes.nights = {
     const ctx = this.context(G); if (!ctx) { G.hud.flash('Walk up to a tree, a bush or the fire', 'info', 1200); return; }
     this.useCool = 0.32;
     if (ctx.kind === 'feed') {
-      const n = this.logs; this.logs = 0; Shared.act('feed', { n });
+      if (ctx.full) { G.hud.flash('The fire is full', 'info', 1100); return; }
+      const n = this.feedCount(); this.logs -= n; Shared.act('feed', { n });
     } else if (ctx.kind === 'eat') {
       if (this.food > 95) return;
       this.food = Math.min(100, this.food + 35); G.heal(8); Sfx.play('pop'); Shared.act('eat', { k: ctx.k });
@@ -231,7 +257,7 @@ Modes.nights = {
         Shared.act('fell', { k: ctx.k });
       } else this.chops.set(ctx.k, n);
     }
-    this.hud(G);
+    this.ctxT = 0; this.hud(G);
   },
   setTree(k, on) {
     const t = this.trees.get(k); if (!t || !t.trunk) return;
@@ -239,69 +265,126 @@ Modes.nights = {
   },
   setBush(k, full) { const b = this.bushes.get(k); if (b) for (const id of b.ids) Game.setPartVisible(id, full); },
   onAct(from, kind, d, G) {
-    if (!d) return;
-    if (kind === 'fell') { const k = d.k | 0; if (this.trees.has(k) && !this.down.has(k)) { this.down.set(k, 150); this.setTree(k, false); if (!from.isMe) Sfx.play('chop'); } }
-    else if (kind === 'eat') { const k = d.k | 0; if (this.bushes.has(k)) { this.eaten.set(k, 90); this.setBush(k, false); } }
-    else if (kind === 'feed') {
-      const n = clamp(d.n | 0, 0, 20);
-      if (Shared.isHost()) { const was = this.fuel; this.fuel = Math.min(100, this.fuel + n * 10); if (was <= 0 && this.fuel > 0) G.hud.flash('The fire is back!', 'good', 1300); }
+    if (!d || typeof d !== 'object') return;
+    if (kind === 'fell') {
+      const k = d.k | 0; if (from.isMe) this.mark('t' + k);
+      if (this.trees.has(k) && !this.down.has(k)) { this.down.set(k, 150); this.setTree(k, false); if (!from.isMe) Sfx.play('chop'); }
+    } else if (kind === 'eat') {
+      const k = d.k | 0; if (from.isMe) this.mark('b' + k);
+      if (this.bushes.has(k)) { this.eaten.set(k, 90); this.setBush(k, false); }
+    } else if (kind === 'feed') {
+      const n = clamp(d.n | 0, 0, 20); if (!n) return;
+      const host = Shared.isHost();
+      // The host owns the fire. Our own feed shows at once; the host's next state includes it.
+      if (host || from.isMe) {
+        const was = this.fuel; this.fuel = Math.min(100, this.fuel + n * this.logFuel);
+        if (!host) this.mark('f');
+        if (was <= 0 && this.fuel > 0) G.hud.flash('The fire is back!', 'good', 1300);
+      }
       G.fx.burst({ x: 0, y: 1.6, z: 0 }, '#FFC53A', 10 + n * 3, 5); Sfx.play('crackle');
       if (!from.isMe) G.hud.flash(`${from.name} fed the fire`, 'info', 900);
+      this.hud(G);
+    } else if (kind === 'rescue') {
+      const b = this.campers.find(c => c.name === d.name);
+      if (b) this.rescue(b, G, from.isMe ? '' : 'remote');
     }
   },
   hostState() {
     return { c: Math.round(this.c * 10) / 10, s: this.survived, f: Math.round(this.fuel * 10) / 10, tr: [...this.down.keys()], bu: [...this.eaten.keys()], r: [...this.rescued] };
   },
+  // A guest mirrors the host's camp: clock, nights, fire, felled trees, eaten bushes and rescued campers.
   onShared(st, G) {
-    if (!st) return;
-    if (this.choosing) { this.hidePanel(G); this.choosing = false; G.frozen = false; G.hud.flash('You joined the camp', 'good', 1400); }
-    if (Math.abs(this.c - st.c) > 0.6) this.c = +st.c || 0;
-    this.fuel = clamp(+st.f || 0, 0, 100);
-    if ((st.s | 0) > this.survived) { this.survived = st.s | 0; this.dawn(G, false); }
+    if (!st || typeof st !== 'object') return;
+    const first = !this.synced; this.synced = true;
+    if (first && this.ownSave && !this.hostedRoom) this.joinedRun = true;
+    if (this.choosing) { this.hidePanel(G); this.choosing = false; this.ask = null; G.frozen = false; G.hud.flash('You joined the camp', 'good', 1400); }
+    const c = +st.c; if (Number.isFinite(c) && Math.abs(this.c - c) > 0.6) this.c = clamp(c, 0, this.cycle);
+    const was = this.fuel; let f = clamp(+st.f || 0, 0, 100);
+    if (this.fresh('f')) f = Math.max(f, this.fuel);
+    this.fuel = f;
+    if (!first && was > 0 && f <= 0) { G.hud.flash('The fire went out!', 'bad', 2000); Sfx.play('alarm'); }
+    else if (!first && was <= 0 && f > 0) G.hud.flash('The fire is back!', 'good', 1300);
+    // Nights: adopt the host's count. Only a night lived through here (one more than before) counts as a dawn.
+    const s = clamp(st.s | 0, 0, G.modeOpts.nights);
+    if (s !== this.survived) { const lived = !first && s === this.survived + 1; this.survived = s; if (lived) { this.dawn(G, false); if (G.ended) return; } }
+    const r = new Set(Array.isArray(st.r) ? st.r : []);
+    for (const b of this.campers) {
+      const safe = b.data.state === 'safe';
+      if (r.has(b.name) && !safe) this.rescue(b, G, first ? 'quiet' : 'remote');
+      else if (first && safe && !r.has(b.name)) this.unrescue(b, G);
+    }
     const tr = new Set(st.tr || []), bu = new Set(st.bu || []);
-    for (const k of this.trees.keys()) { const isDown = tr.has(k); if (isDown !== this.down.has(k)) { if (isDown) this.down.set(k, 150); else this.down.delete(k); this.setTree(k, !isDown); } }
-    for (const k of this.bushes.keys()) { const empty = bu.has(k); if (empty !== this.eaten.has(k)) { if (empty) this.eaten.set(k, 90); else this.eaten.delete(k); this.setBush(k, !empty); } }
+    for (const k of this.trees.keys()) {
+      const isDown = tr.has(k); if (isDown === this.down.has(k) || (!isDown && this.fresh('t' + k))) continue;
+      if (isDown) this.down.set(k, 150); else this.down.delete(k); this.setTree(k, !isDown);
+    }
+    for (const k of this.bushes.keys()) {
+      const empty = bu.has(k); if (empty === this.eaten.has(k) || (!empty && this.fresh('b' + k))) continue;
+      if (empty) this.eaten.set(k, 90); else this.eaten.delete(k); this.setBush(k, !empty);
+    }
+    this.hud(G);
   },
   // A night survived.
   dawn(G, host) {
     const o = G.modeOpts;
     G.hud.flash(`Night ${this.survived} survived!`, 'good', 2000); Sfx.play('checkpoint');
+    saveBest(G.def.id, this.survived, false);
     if (this.survived >= o.nights) {
-      LS.set(this.saveKey, null); saveBest(G.def.id, this.survived, false);
-      G.end({ win: true, title: `You survived ${o.nights} nights!`, sub: 'The forest is quiet at last', stats: [['Nights', this.survived], ['Campers rescued', `${this.rescued.size} / ${this.campers.length}`]] });
+      if (!this.joinedRun) { LS.set(this.saveKey, null); this.ownSave = null; }
+      G.end({ win: true, title: `You survived ${o.nights} nights!`, sub: this.theme.win, stats: [['Nights', this.survived], ['Campers rescued', `${this.rescued.size} / ${this.campers.length}`]] });
       return;
     }
     if (host) this.save();
-    saveBest(G.def.id, this.survived, false);
   },
-  rescue(b, G, quiet) {
+  // how: '' when we brought them in, 'remote' when another player did, 'quiet' when loading or syncing.
+  rescue(b, G, how = '') {
     if (b.data.state === 'safe') return;
     b.data.state = 'safe'; this.rescued.add(b.name); this.cap += 2;
     const s = b.data.seat; b.body.pos.set(Math.cos(s) * 4, 0.3, Math.sin(s) * 4); b.body.vel.set(0, 0, 0);
-    if (!quiet) { G.hud.flash(`${b.name} is safe!`, 'good', 1600); Sfx.play('win'); b.say('Thank you! I will keep the fire going'); G.fx.ring({ x: b.pos.x, y: 0.3, z: b.pos.z }, '#3FD07A', 3); this.save(); }
+    if (how !== 'quiet') {
+      G.hud.flash(`${b.name} is safe!`, 'good', 1600); Sfx.play(how ? 'checkpoint' : 'win');
+      if (!how) b.say('Thank you! I will keep the fire going');
+      G.fx.ring({ x: b.pos.x, y: 0.3, z: b.pos.z }, '#3FD07A', 3); this.save();
+    }
     this.hud(G);
+  },
+  // Back to their tent (a guest's local rescue that the host's camp doesn't have).
+  unrescue(b, G) {
+    if (b.data.state !== 'safe') return;
+    this.rescued.delete(b.name); this.cap = Math.max(6, this.cap - 2); this.logs = Math.min(this.logs, this.cap);
+    b.data.state = 'lost'; b.respawn(b.data.home); this.hud(G);
   },
   onTouch(p, G) {
     if (p.tag !== 'flame') return;
+    if (this.fuel <= 0) return true; // a dead fire doesn't burn
     const b = G.body, l = Math.hypot(b.pos.x, b.pos.z) || 1; G.damage(10, 'hazard'); b.vel.x += (b.pos.x / l || 0) * 10; b.vel.z += (b.pos.z / l || 1) * 10; b.vel.y = 6; b.grounded = false; b.noSnap = 0.2;
     return true;
   },
-  onDeath(G) {
-    if (G.others().length) { this.respawnT = 6; G.hud.flash(`${G.modeOpts.creature} got you. Back to camp soon`, 'bad', 2200); return true; }
-    const sv = LS.get(this.saveKey, null), why = G.lastHitBy === 'hunger' ? 'You ran out of food' : `${G.modeOpts.creature[0].toUpperCase() + G.modeOpts.creature.slice(1)} got you`;
-    const best = getBest(G.def.id);
-    G.end({ win: false, title: why, sub: `You survived ${this.survived} night${this.survived === 1 ? '' : 's'}`, stats: [['Nights survived', this.survived], ['Best', best === null ? this.survived : Math.max(best, this.survived)], ['Campers rescued', `${this.rescued.size} / ${this.campers.length}`]], againLabel: sv && sv.s ? `Try again from night ${sv.s + 1}` : 'Try again' });
+  onDeath(G, why) {
+    if (why === 'reset') return; // Reset character: the runtime puts you back at camp and the run goes on
+    const msg = this.cause(G);
+    if (Net.remotes.size) { this.respawnT = 6; G.hud.flash(`${msg}. Back to camp soon`, 'bad', 2200); return true; }
+    const sv = this.readSave(), best = getBest(G.def.id);
+    G.end({ win: false, title: msg, sub: `You survived ${this.survived} night${this.survived === 1 ? '' : 's'}`, stats: [['Nights survived', this.survived], ['Best', best === null ? this.survived : Math.max(best, this.survived)], ['Campers rescued', `${this.rescued.size} / ${this.campers.length}`]], againLabel: sv ? `Try again from night ${sv.s + 1}` : 'Try again' });
     return true;
   },
-  onRespawn(G) { this.food = Math.max(this.food, 40); },
+  onRespawn(G) { this.food = Math.max(this.food, 40); this.ctxT = 0; },
   // ---- per frame ----
   update(dt, G) {
     if (G.ended) return;
-    const o = G.modeOpts, host = Shared.isHost();
+    const o = G.modeOpts, host = Shared.isHost(), crowd = Net.remotes.size > 0;
+    if (host && crowd && Net.room) this.hostedRoom = true;
     this.useCool -= dt;
     this.sky(o);
     this.fireLook(dt);
-    if (this.choosing) return;
+    if (this.choosing) {
+      this.waitChoice(dt, G);
+      // Alone, the whole camp waits for the choice. With others here, the host's camp keeps running for them and
+      // only the host's own player waits.
+      if (!(host && crowd)) return;
+      const a = this.ask;
+      if (a && a.ready && !a.crowd) { a.crowd = true; G.hud.updatePanel({ text: `Your saved run reached dawn after night ${a.sv.s}. The camp keeps going for the others while you choose.` }); }
+    }
     // Clock, fire and regrowth: the host runs them; everyone else follows the host's state.
     this.c += dt;
     if (this.c >= this.cycle) { this.c -= this.cycle; if (host) { this.survived++; this.dawn(G, true); if (G.ended) return; } }
@@ -312,24 +395,30 @@ Modes.nights = {
       for (const [k, t] of this.down) if (t - dt <= 0) { this.down.delete(k); this.setTree(k, true); } else this.down.set(k, t - dt);
       for (const [k, t] of this.eaten) if (t - dt <= 0) { this.eaten.delete(k); this.setBush(k, true); } else this.eaten.set(k, t - dt);
     }
+    if ((this.hudT -= dt) <= 0) { this.hudT = 0.25; this.hud(G); }
+    if (this.choosing) return;
     if (!this.warned && this.c > o.day - 12 && this.c < o.day) { this.warned = true; G.hud.flash('Night is coming. Get back to the fire', 'info', 2200); }
     if (this.c < o.day - 12) this.warned = false;
     // You
     const me = G.body.pos, r = Math.hypot(me.x, me.z);
-    if (r > 104) { me.x *= 104 / r; me.z *= 104 / r; if (!this.edgeT || G.t - this.edgeT > 3) { this.edgeT = G.t; G.hud.flash('The woods are too thick that way', 'info', 1200); } }
+    if (r > 104) { me.x *= 104 / r; me.z *= 104 / r; if (G.t - this.edgeT > 3) { this.edgeT = G.t; G.hud.flash('The woods are too thick that way', 'info', 1200); } }
     if (!G.dead) {
       this.food = Math.max(0, this.food - dt * 0.5);
       if (this.food <= 0) G.damage(2 * dt, 'hunger', true);
       if (r < this.safeR() && G.hp < G.maxHp) G.heal(3 * dt);
     }
     if (this.respawnT > 0 && (this.respawnT -= dt) <= 0) { G.setCheckpoint([0, 0.3, 7], Math.PI); G.respawn(true); }
-    // Who needs what
-    const ctx = !G.dead && this.context(G);
-    G.setActionLabel('use', ctx ? ctx.label : 'Use');
-    G.hud.prompt(ctx ? ctx.prompt : null);
+    // What the action button does here. Checked ten times a second, written only when it changes.
+    if ((this.ctxT -= dt) <= 0) {
+      this.ctxT = 0.1;
+      const ctx = !G.dead && this.context(G), key = ctx ? ctx.kind + '|' + ctx.prompt : '';
+      if (key !== this.lastCtx) {
+        this.lastCtx = key;
+        G.setActionLabel('use', ctx ? ctx.label : 'Use'); G.setActionIcon('use', ctx ? ctx.icon : 'hand'); G.hud.prompt(ctx ? ctx.prompt : null);
+      }
+    }
     for (const b of this.campers) this.camper(b, dt, G);
     this.creature(dt, G);
-    if ((this.hudT = (this.hudT || 0) - dt) <= 0) { this.hudT = 0.25; this.hud(G); }
   },
   sky(o) {
     const D = o.day, N = o.night, c = this.c, day = this.dayEnv;
@@ -355,7 +444,8 @@ Modes.nights = {
       if (G.dead) { d.state = 'lost'; b.respawn(d.home); return; }
       if (b.dist(me) > 16) { const a = G.facing + Math.PI; b.respawn([me.x + Math.sin(a) * 2, me.y + 0.5, me.z + Math.cos(a) * 2]); }
       b.goTo(me.x, me.z, 2.2);
-      if (Math.hypot(b.pos.x, b.pos.z) < 8.5) this.rescue(b, G);
+      // Everyone in the room seats them at the fire (onAct runs right away for us).
+      if (Math.hypot(b.pos.x, b.pos.z) < 8.5) Shared.act('rescue', { name: b.name });
     } else {
       const s = d.seat; if (b.goTo(Math.cos(s) * 4, Math.sin(s) * 4, 0.5)) b.face(0, 0);
     }
@@ -368,16 +458,17 @@ Modes.nights = {
     }
     if (d.state === 'away') {
       const a = G.R() * Math.PI * 2; g.body.pos.set(me.x + Math.cos(a) * 34, 0.6, me.z + Math.sin(a) * 34); g.avatar.root.visible = true; d.state = 'hunt';
-      G.hud.flash(`${o.creature[0].toUpperCase() + o.creature.slice(1)} is out there`, 'bad', 1800); Sfx.play('whoosh');
+      G.hud.flash(`${cap1(o.creature)} is out there`, 'bad', 1800); Sfx.play('whoosh');
     }
     const safe = this.safeR(), pr = Math.hypot(me.x, me.z), gd = Math.hypot(g.pos.x - me.x, g.pos.z - me.z);
     g.speed = (0.4 + Math.min(0.45, this.survived * 0.005)) * (this.fuel <= 0 ? 1.45 : 1);
     if (d.state === 'retreat') {
       d.t -= dt; const ax = g.pos.x - me.x, az = g.pos.z - me.z, l = Math.hypot(ax, az) || 1; g.move.x = ax / l; g.move.z = az / l; g.move.y = 0;
       if (d.t <= 0) d.state = 'hunt';
-    } else if (!G.dead && pr > safe - 0.5) {
+    } else if (!G.dead && pr > safe + 0.5) {
       g.goTo(me.x, me.z, 0.1, me.y + 0.4); g.face(me.x, me.z);
-      if (gd < 1.5 && Math.abs(g.pos.y - me.y) < 2.2) {
+      // Never inside the firelight: it only strikes a player standing out in the dark.
+      if (gd < 1.5 && pr > safe && Math.abs(g.pos.y - me.y) < 2.2) {
         G.damage(Math.round(24 + this.survived * 0.25), 'gloom');
         const l = gd || 1; G.body.vel.x += (me.x - g.pos.x) / l * 12; G.body.vel.z += (me.z - g.pos.z) / l * 12; G.body.vel.y = 7; G.body.grounded = false; G.body.noSnap = 0.2;
         d.state = 'retreat'; d.t = 2.5;
@@ -424,6 +515,7 @@ Modes.shadehunt = {
     const o = G.modeOpts; this.left = o.time; this.caught = 0;
     World.setEnv(Object.assign({}, ENV.haunted, { hemiI: 0.28, sunI: 0.12, fog: 0.4 }));
     this.lamp = new THREE.PointLight('#FFD9A0', 1.8, 16, 1.4); World.scene.add(this.lamp);
+    this.pool = lightPool('#FFD9A0', 5.5).add(); this.poolY = G.body.pos.y;
     this.shades = [];
     for (let i = 0; i < o.shades; i++) {
       const a = i / o.shades * Math.PI * 2 + G.R(), r = 12 + G.R() * 22;
@@ -433,11 +525,16 @@ Modes.shadehunt = {
     G.hud.objective(`Catch all ${o.shades} shades before the clock strikes`);
     G.hud.stat('shades', `0 / ${o.shades}`, { icon: 'eye', label: 'Shades caught' }); G.hud.stat('time', fmtClock(this.left), { icon: 'clock', label: 'Time' });
   },
-  teardown() { if (this.lamp && this.lamp.parent) this.lamp.parent.remove(this.lamp); this.lamp = null; },
+  teardown() {
+    if (this.lamp && this.lamp.parent) this.lamp.parent.remove(this.lamp); this.lamp = null;
+    if (this.pool) this.pool.dispose(); this.pool = null;
+  },
   update(dt, G) {
     if (G.ended) return;
     const o = G.modeOpts, me = G.body.pos;
     this.lamp.position.set(me.x, me.y + 2.2, me.z); this.lamp.intensity = 1.6 + Math.sin(G.t * 8) * 0.08;
+    if (G.body.grounded) this.poolY = me.y;
+    this.pool.at(me.x, this.poolY + 0.06, me.z, G.dead ? 0 : 1 + Math.sin(G.t * 8) * 0.03);
     this.left -= dt; G.hud.stat('time', fmtClock(this.left), { icon: 'clock', warn: this.left < 20 });
     for (const b of this.shades) {
       if (!b.alive) continue;
@@ -466,7 +563,7 @@ Modes.shadehunt = {
 
 // ---- Lantern Trail: follow a dark forest path to the beacon before your lantern oil runs out ----
 export function lanternTrailMap(R) {
-  const parts = [], P = (...a) => parts.push(mkPart(...a));
+  const parts = [], P = (...a) => parts.push(mkPart(...a)), STREAM = 13;
   P('block', [0, -1, 0], [400, 2, 400], '#1E3324', 'grass', { name: 'Forest floor' });
   let x = 0, z = 0, a = 0; const pts = [[0, 0, 0]];
   for (let i = 0; i < 26; i++) { a += (R() - 0.5) * 0.9; x += Math.sin(a) * 9; z -= Math.cos(a) * 9; pts.push([x, z, a]); }
@@ -475,12 +572,16 @@ export function lanternTrailMap(R) {
     if (i > 0 && i < pts.length - 1) {
       const [qx, qz] = pts[i - 1]; P('cylinder', [(px + qx) / 2, 0.02, (pz + qz) / 2], [5, 0.04, 5], '#6A5235', 'sand', { name: 'Path', canCollide: false });
       if (i % 2 === 0) PartyKit.item(parts, 'gem', [px + (R() - 0.5) * 2, 1, pz + (R() - 0.5) * 2], { color: '#FFC53A', extra: { name: 'Lantern oil', bp: { value: 1 } } });
-      if (i % 5 === 3) P('cylinder', [px, 0.45, pz], [0.9, 5, 0.9], '#5A4030', 'wood', { name: 'Fallen log', rot: [90, -Math.atan2(pz - qz, px - qx) / DEG, 0] });
-      if (i === 13) { // a stream with stepping stones
-        P('block', [px, 0.05, pz], [40, 0.1, 5], '#2E86D8', 'ice', { name: 'Cold stream', behavior: 'kill', rot: [0, -pa / DEG, 0] });
-        for (const s of [-1.7, 0, 1.7]) P('cylinder', [px + Math.sin(pa) * s, 0.15, pz - Math.cos(pa) * s], [1.6, 0.5, 1.6], '#8A939E', 'stone', { name: 'Stepping stone' });
+      if (i % 5 === 3 && i !== STREAM) P('cylinder', [px, 0.45, pz], [0.9, 5, 0.9], '#5A4030', 'wood', { name: 'Fallen log', rot: [90, -Math.atan2(pz - qz, px - qx) / DEG, 0] });
+      if (i === STREAM) {
+        // A cold stream across the trail with stepping stones. The trail can bend here, so the stream and the
+        // stones line up halfway between the way in and the way out, and the stones reach both banks.
+        const sa = (pa + pts[i + 1][2]) / 2;
+        P('block', [px, 0.05, pz], [40, 0.1, 5], '#2E86D8', 'ice', { name: 'Cold stream', behavior: 'kill', rot: [0, -sa / DEG, 0] });
+        for (const s of [-1.8, 0, 1.8]) P('cylinder', [px + Math.sin(sa) * s, 0.15, pz - Math.cos(sa) * s], [1.9, 0.5, 1.9], '#8A939E', 'stone', { name: 'Stepping stone' });
       }
-      if (i % 3 === 1) P('cylinder', [px, 0.1, pz], [3, 0.2, 3], '#8A939E', 'stone', { name: 'Trail marker', behavior: 'checkpoint' });
+      // Trail markers save your place; the ones by the stream sit on dry ground, one on each bank.
+      if ((i % 3 === 1 && i !== STREAM) || i === STREAM - 1 || i === STREAM + 1) P('cylinder', [px, 0.1, pz], [3, 0.2, 3], '#8A939E', 'stone', { name: 'Trail marker', behavior: 'checkpoint' });
     }
   });
   const [ex, ez] = pts[pts.length - 1];
@@ -498,21 +599,37 @@ Modes.lantern = {
   label: 'Lantern Trail',
   hint: 'WASD to move · Space to jump · Grab oil jars to keep your lantern lit',
   setup(G) {
-    this.oil = 100;
+    this.oil = 100; this.dark = false; this.poolY = G.body.pos.y;
     World.setEnv(Object.assign({}, DEEP_NIGHT, { fog: 0.26, hemiI: 0.16 }));
     this.lamp = new THREE.PointLight('#FFD9A0', 2, 18, 1.4); World.scene.add(this.lamp);
+    this.pool = lightPool('#FFD9A0', 5).add();
     G.hud.objective('Follow the trail to the beacon');
     G.hud.stat('oil', '100%', { icon: 'fire', label: 'Lantern oil' }); G.hud.stat('time', fmtTime(0), { icon: 'clock', label: 'Time' });
   },
-  teardown() { if (this.lamp && this.lamp.parent) this.lamp.parent.remove(this.lamp); this.lamp = null; },
+  teardown() {
+    if (this.lamp && this.lamp.parent) this.lamp.parent.remove(this.lamp); this.lamp = null;
+    if (this.pool) this.pool.dispose(); this.pool = null;
+  },
   onCoin(p, G) { this.oil = Math.min(100, this.oil + 30); G.fx.text({ x: G.body.pos.x, y: G.body.pos.y + 2.4, z: G.body.pos.z }, '+30 oil', '#FFE07A'); },
   onRespawn() { this.oil = Math.max(this.oil, 50); },
+  onFinish(p, G) {
+    const best = saveBest(G.def.id, G.time);
+    G.end({
+      win: true, title: 'You reached the beacon!', sub: best.isNew ? (best.had ? 'New personal best!' : 'First clear!') : `Your best: ${fmtTime(best.best)}`,
+      stats: [['Time', fmtTime(G.time)], ['Oil jars', `${G.score} / ${G.coinsTotal}`], ['Restarts', G.deaths]],
+    });
+    return true;
+  },
   update(dt, G) {
     if (G.ended) return;
-    const me = G.body.pos, f = this.oil / 100;
+    const me = G.body.pos, f = this.oil / 100, lit = this.oil > 0;
     if (!G.dead && !G.frozen) this.oil = Math.max(0, this.oil - dt * 2.2);
-    this.lamp.position.set(me.x, me.y + 2.2, me.z); this.lamp.intensity = this.oil > 0 ? (0.8 + 1.6 * f) * (0.95 + Math.sin(G.t * 11) * 0.05) : 0; this.lamp.distance = 6 + 16 * f;
-    if (this.oil <= 0 && !G.dead) { G.damage(8 * dt, 'dark', true); G.hud.prompt('Your lantern is out! Find oil'); } else G.hud.prompt(null);
+    this.lamp.position.set(me.x, me.y + 2.2, me.z); this.lamp.intensity = lit ? (0.8 + 1.6 * f) * (0.95 + Math.sin(G.t * 11) * 0.05) : 0; this.lamp.distance = 6 + 16 * f;
+    if (G.body.grounded) this.poolY = me.y;
+    this.pool.at(me.x, this.poolY + 0.06, me.z, lit && !G.dead ? 0.45 + 0.75 * f : 0);
+    const dark = !lit && !G.dead;
+    if (dark) G.damage(8 * dt, 'dark', true);
+    if (dark !== this.dark) { this.dark = dark; G.hud.prompt(dark ? 'Your lantern is out! Find oil' : null); }
     G.hud.stat('oil', Math.ceil(this.oil) + '%', { icon: 'fire', warn: this.oil < 25 });
     G.hud.stat('time', fmtTime(G.time), { icon: 'clock' });
   },

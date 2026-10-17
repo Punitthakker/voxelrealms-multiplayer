@@ -452,6 +452,8 @@ textarea.text-input { padding: 10px 12px; resize: vertical; min-height: 72px; }
 .hud-stat.warn { background: rgba(200, 48, 58, .78); }
 .hud-stat.warn svg.i { color: #fff; }
 @media (max-width: 640px) { .hud-top { top: calc(env(safe-area-inset-top, 0px) + 72px); max-width: calc(100vw - 28px); } }
+/* Phones: the objective and chips get the full width (a box placed at left: 50% only had half the screen to wrap in). */
+@media (max-width: 640px) { .hud-top { left: 14px; right: 14px; transform: none; } }
 .hud-board {
   position: absolute; right: calc(env(safe-area-inset-right, 0px) + 14px); top: calc(env(safe-area-inset-top, 0px) + 60px);
   min-width: 150px; max-width: 200px; padding: 8px 10px; border-radius: 12px; background: var(--hud-glass); border: 1px solid var(--hud-line); font-size: 13px;
@@ -945,6 +947,10 @@ body.touch .hud-act .key { display: none; }
 body.touch .ar-k { display: none; }
 #ar-pick-t { margin: 12px 0 0; font-weight: 700; font-size: 14px; opacity: .9; }
 .ar-pick .btn { margin-top: 12px; min-width: 140px; }
+/* A second, plain button in a choice panel reads on the dark glass like the end card's (and sits apart). */
+.ar-pick .btn + .btn { margin-left: 8px; }
+@media (max-width: 520px) { .ar-pick .btn + .btn { margin-left: 0; } }
+.ar-pick .btn:not(.btn-ember) { background: transparent; color: var(--hud-ink); border-color: var(--hud-line); }
 @media (max-width: 520px) {
   .ar-row { grid-template-columns: repeat(3, 1fr); gap: 6px; }
   .ar-w { min-height: 84px; padding: 12px 4px 10px; }

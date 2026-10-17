@@ -32,6 +32,7 @@ export { Net, Shared, netStore, lobbyStore, MAX_PLAYERS, CHAT_MAX, REPORT_REASON
 export { settingsStore, openSettings, closeSettings, applySetting, presetHelp, PRESET_KEYS } from './settings-ui.js';
 export { Studio, studioStore, ST_INSERT, ST_COLORS, ST_MATERIALS, BEHAVIOR_INFO, STUDIO_MODES, STUDIO_TOOLS, INSERT_CATS, r3 } from './studio.js';
 export { Thumbs, statusLine } from './home.js';
+export { Editor, editorStore, EDITOR_TOOLS, EDITOR_SIZES, UNDO_STEPS } from './skin-editor.js';
 
 /* ---------- Loop ---------- */
 export const Loop = { last: 0, n: 0, acc: 0, fps: 60, errs: 0, running: false };

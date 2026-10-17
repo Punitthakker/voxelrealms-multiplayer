@@ -134,7 +134,9 @@ Modes.rivals = {
   setup(G) {
     ArenaShots.init();
     const o = G.modeOpts;
-    this.mp = G.others().length > 0; this.format = this.mp ? 'room' : o.format;
+    // With other players here (and a mode that has one) we play the room match: everyone against everyone.
+    this.mp = this.roomMatch !== false && G.others().length > 0; this.format = this.mp ? 'room' : o.format;
+    this.roomOffer = false; this.aloneT = 0; this.hitsOut = new Map();
     this.myTeam = 0; this.round = 0; this.wins = [0, 0]; this.splats = 0; this.shots = 0; this.hits = 0; this.phase = 'idle'; this.t = 0; this.cool = 0; this.reloadT = 0;
     this.weapon = o.weapons[0]; this.ammo = BLASTERS[this.weapon].mag; this.trigger = false; this.firing = false; this.joinNote = false; this.winner = null;
     this.spawns = G.partsByTag('spawnpoint');
@@ -155,10 +157,33 @@ Modes.rivals = {
     else {
       G.hud.objective(`First to ${o.target} splats wins`); G.hud.stat('splats', `0 / ${o.target}`, { icon: 'target', label: 'Splats' });
       this.phase = 'fight'; this.setTeamPaint();
+      if (this.format === 'room') { const i = Math.floor(G.R() * this.spawns.length), sp = this.spawns[i]; G.setCheckpoint(this.spawnPos(0, i), sp ? sp.bp.yaw : Math.PI); G.respawn(false); }
       if (o.weapons.length > 1) this.showPick(G, false);
     }
-    G.setPublic({ hp: G.hp, dead: false });
+    this.pub(G);
   },
+  // What other players read about us: health, splatted, in the room match, on the result card.
+  pub(G, ended) { G.setPublic({ hp: Math.max(0, Math.round(G.hp)), dead: !!G.dead, room: this.format === 'room' ? 1 : 0, end: ended ? 1 : 0 }); },
+  // Start over on the next frame (setup then sees who is in the room).
+  restartSoon(G, msg) {
+    if (msg) G.hud.flash(msg, 'info', 1500);
+    const def = G.def; setTimeout(() => { if (G.active && G.mode === this && G.def === def) G.restart(); }, 0);
+  },
+  // A round boundary with someone else here: switch to the room match, or finish this one.
+  offerRoom(G) {
+    this.hidePick(G); this.pickN = null; this.pickOpts = null; // number keys still switch blasters, quietly
+    G.hud.panel({
+      title: 'A player joined', text: `Round starts in ${Math.ceil(this.t)}`, options: [],
+      buttons: [{ id: 'room', label: 'Play the room match', kind: 'ember' }, { id: 'stay', label: 'Finish this match' }],
+      onButton: id => {
+        this.roomOffer = false;
+        if (id === 'room') this.restartSoon(G);
+        else if (G.modeOpts.weapons.length > 1) this.showPick(G, true);
+        else { this.hidePick(G); this.phase = 'count'; this.t = 3.2; }
+      },
+    });
+  },
+  onEnd(G) { this.pub(G, true); },
   teardown(G) { ArenaShots.clear(); window.removeEventListener('keydown', this.keyHandler); this.hidePick(G); },
   spawnPos(team, i) {
     let list = this.spawns.filter(p => this.format === 'ffa' || this.format === 'room' ? true : p.bp.team === team);
@@ -177,11 +202,13 @@ Modes.rivals = {
     this.bots.forEach((b, i) => { b.respawn(this.spawnPos(b.team, i + 1)); b.data.ammo = BLASTERS[b.data.weapon].mag; b.data.cool = 1.2; });
     this.setTeamPaint(); this.ammo = BLASTERS[this.weapon].mag; this.reloadT = 0;
     G.frozen = true;
-    if (G.modeOpts.weapons.length > 1) { this.phase = 'pick'; this.t = 7; this.showPick(G, true); }
+    if (this.roomOffer && G.others().length) { this.phase = 'pick'; this.t = 8; this.offerRoom(G); }
+    else if (G.modeOpts.weapons.length > 1) { this.phase = 'pick'; this.t = 7; this.showPick(G, true); }
     else { this.phase = 'count'; this.t = 3.2; }
     G.hud.flash('Round ' + this.round, 'info', 1200);
   },
   showPick(G, timed) {
+    this.pickN = null;
     const opts = () => G.modeOpts.weapons.map((k, i) => ({ id: k, title: BLASTERS[k].name, blurb: BLASTERS[k].blurb, key: String(i + 1), on: k === this.weapon }));
     this.pickOpts = opts;
     G.hud.panel({
@@ -218,14 +245,18 @@ Modes.rivals = {
     if (s.owner !== 'me' && !G.dead && hitCapsule(G.body.pos, pt, s.size) && (this.format === 'ffa' || this.format === 'room' || s.team !== this.myTeam)) return { me: true };
     const bot = G.bots.hitTest(pt, s.size, s.owner === 'me' ? null : s.owner);
     if (bot && (this.format === 'ffa' || bot.team !== s.team || s.owner === 'me' && bot.team !== this.myTeam)) return { bot };
-    if (s.owner === 'me') for (const o of G.others()) if (o.visible && !(o.x && o.x.dead) && hitCapsule(o.pos, pt, s.size)) return { other: o };
+    if (s.owner === 'me' && this.format === 'room') for (const o of G.others()) if (o.visible && o.x && o.x.room && !o.x.dead && !o.x.end && hitCapsule(o.pos, pt, s.size)) return { other: o };
     return null;
   },
   shotHit(s, t, G) {
     if (t.me) { G.damage(s.dmg, s.owner); G.fx.burst({ x: G.body.pos.x, y: G.body.pos.y + 1.2, z: G.body.pos.z }, s.color, 6, 3); return; }
     if (s.owner === 'me') { this.hits++; Sfx.play('pop'); }
     if (t.bot) { const p = t.bot.pos; G.fx.burst({ x: p.x, y: p.y + 1.2, z: p.z }, s.color, 6, 3); if (s.owner === 'me') G.fx.text({ x: p.x, y: p.y + 2.6, z: p.z }, '-' + s.dmg, '#FFE07A'); G.bots.damage(t.bot, s.dmg, s.owner); }
-    else if (t.other) { G.fx.burst({ x: t.other.pos.x, y: t.other.pos.y + 1.2, z: t.other.pos.z }, s.color, 6, 3); G.fx.text({ x: t.other.pos.x, y: t.other.pos.y + 2.6, z: t.other.pos.z }, '-' + s.dmg, '#FFE07A'); Shared.act('hit', { to: t.other.peer, dmg: s.dmg }); }
+    else if (t.other) {
+      G.fx.burst({ x: t.other.pos.x, y: t.other.pos.y + 1.2, z: t.other.pos.z }, s.color, 6, 3); G.fx.text({ x: t.other.pos.x, y: t.other.pos.y + 2.6, z: t.other.pos.z }, '-' + s.dmg, '#FFE07A');
+      // Pellets that land together go out as one hit (sent at the end of the frame).
+      this.hitsOut.set(t.other.peer, (this.hitsOut.get(t.other.peer) || 0) + s.dmg);
+    }
   },
   onBotDown(bot, why, G) {
     if (why === 'me' || (bot.lastBy === 'me')) { this.splats++; G.addScore(1); }
@@ -240,45 +271,76 @@ Modes.rivals = {
     const enemies = this.bots.filter(b => b.team !== this.myTeam && b.alive).length, mates = this.bots.filter(b => b.team === this.myTeam && b.alive).length + (G.dead ? 0 : 1);
     if (!enemies) this.roundOver(G, true); else if (!mates) this.roundOver(G, false);
   },
+  ffaBoard(G) { G.hud.board([{ name: Profile.displayName(), value: G.score, me: true }, ...this.bots.map(b => ({ name: b.name, value: b.data.splats }))].sort((a, b) => b.value - a.value), 'Splats'); },
   checkFfa(G) {
     const t = G.modeOpts.target;
-    if (G.score >= t) G.end({ win: true, title: 'You win the match!', stats: this.stats(G) });
-    else { const top = this.bots.find(b => b.data.splats >= t); if (top) G.end({ win: false, title: `${top.name} wins the match`, stats: this.stats(G) }); }
+    this.ffaBoard(G); // the final count shows on the board behind the result card
+    if (G.score >= t) G.end({ win: true, title: 'You win the match!', stats: this.stats(G), againLabel: this.againLabel(G) });
+    else { const top = this.bots.find(b => b.data.splats >= t); if (top) G.end({ win: false, title: `${top.name} wins the match`, stats: this.stats(G), againLabel: this.againLabel(G) }); }
   },
+  againLabel(G) { return !this.mp && this.roomMatch !== false && G.others().length ? 'Play the room match' : 'Play again'; },
   stats(G) { return [['Splats', this.splats], ['Times splatted', G.deaths], ['Accuracy', this.shots ? Math.round((this.hits / this.shots) * 100) + '%' : '—']]; },
   onDeath(G, why) {
-    G.setPublic({ hp: 0, dead: true });
-    if (this.format === 'room' && G.lastHitBy && G.lastHitBy !== 'me') Shared.act('down', { by: G.lastHitBy });
+    this.pub(G);
+    // Whoever splatted us gets the point (they keep their own score). Not for Reset character.
+    if (this.format === 'room' && why === 'hit' && typeof G.lastHitBy === 'string' && G.lastHitBy !== 'me') Shared.act('down', { by: G.lastHitBy });
     if (why !== 'reset' && G.lastHitBy && G.lastHitBy.data) G.lastHitBy.data.splats++;
     if (this.format === 'duel' || this.format === 'teams') { this.checkRound(G); return true; }
     if (this.format === 'ffa') this.checkFfa(G);
     this.respawnIn = 3; return true;
   },
-  onRespawn(G) { G.setPublic({ hp: G.hp, dead: false }); this.ammo = BLASTERS[this.weapon].mag; this.reloadT = 0; G.hud.stat('ammo', `${this.ammo} / ${BLASTERS[this.weapon].mag}`, { icon: 'blaster' }); },
+  onRespawn(G) { this.pub(G); this.ammo = BLASTERS[this.weapon].mag; this.reloadT = 0; G.hud.stat('ammo', `${this.ammo} / ${BLASTERS[this.weapon].mag}`, { icon: 'blaster' }); },
   onAct(from, kind, d, G) {
-    if (kind === 'hit' && d && d.to === G.myPeer() && !from.isMe) { G.damage(clamp(Number(d.dmg) || 0, 0, 60), from.peer); G.setPublic({ hp: Math.round(G.hp), dead: G.dead }); }
-    if (kind === 'down' && d && d.by === G.myPeer() && !from.isMe) { this.splats++; G.addScore(1); G.hud.flash(`You splatted ${from.name}!`, 'good', 1000); }
+    if (this.format !== 'room' || G.ended || from.isMe || !d) return; // a match against bots ignores other players
+    if (kind === 'hit' && d.to === G.myPeer()) { G.damage(clamp(Number(d.dmg) || 0, 0, 100), from.peer); this.pub(G); }
+    if (kind === 'down' && d.by === G.myPeer()) { this.splats++; G.addScore(1); G.hud.flash(`You splatted ${from.name}!`, 'good', 1000); }
   },
+  // The host calls the winner of the room match: the first player still in the match to reach the target.
+  // A call stays up a few seconds (everyone sees it), then the next match can be decided.
   hostState(G) {
     if (this.format !== 'room') return null;
-    if (!this.winner) { const t = G.modeOpts.target; if (G.score >= t) this.winner = { peer: G.myPeer(), name: Profile.displayName() }; else for (const o of G.others()) if (o.sc >= t) { this.winner = { peer: o.peer, name: o.name }; break; } }
-    return { w: this.winner };
+    if (this.winner && G.t - this.winner.at > 6) this.winner = null;
+    if (!this.winner) {
+      const t = G.modeOpts.target;
+      if (!G.ended && G.score >= t) this.winner = { id: G.myPeer() + ':' + Date.now(), peer: G.myPeer(), name: Profile.displayName(), at: G.t };
+      else for (const o of G.others()) if (o.sc >= t && o.x && o.x.room && !o.x.end) { this.winner = { id: o.peer + ':' + Date.now(), peer: o.peer, name: o.name, at: G.t }; break; }
+    }
+    return { w: this.winner ? { id: this.winner.id, peer: this.winner.peer, name: this.winner.name } : null };
   },
-  onShared(st, G) { if (st && st.w && !G.ended) this.endRoom(G, st.w); },
-  endRoom(G, w) { const me = w.peer === G.myPeer(); G.end({ win: me, title: me ? 'You win the match!' : `${w.name} wins the match`, stats: this.stats(G) }); },
+  onShared(st, G) { if (st && st.w && st.w.id && !G.ended && this.format === 'room') this.endRoom(G, st.w); },
+  endRoom(G, w) {
+    if (this.seenWin === w.id) return; // already shown (we may have pressed Play again since)
+    this.seenWin = w.id;
+    const me = w.peer === G.myPeer(); G.end({ win: me, title: me ? 'You win the match!' : `${String(w.name).slice(0, 40)} wins the match`, stats: this.stats(G) });
+  },
   // ---- per frame ----
   update(dt, G) {
     const o = G.modeOpts, w = BLASTERS[this.weapon];
     ArenaShots.update(dt, G, this);
     if (G.ended) return;
-    if (!this.mp && G.others().length && !this.joinNote) { this.joinNote = true; G.hud.flash('A player joined. Play again for a room match', 'info', 2600); }
+    if (this.hitsOut.size) { for (const [to, dmg] of this.hitsOut) Shared.act('hit', { to, dmg }); this.hitsOut.clear(); }
+    const others = G.others().length;
+    // Someone joined while we play against bots: straight into the room match if we just started, otherwise
+    // offer it at the next round (duels and team games) or on the result card.
+    if (!this.mp && others && !this.joinNote && this.roomMatch !== false) {
+      this.joinNote = true;
+      if (!this.shots && G.time < 12) { this.restartSoon(G, 'Starting a room match'); return; }
+      this.roomOffer = true;
+      G.hud.flash(this.format === 'ffa' ? 'A player joined. Play the room match after this one' : 'A player joined. Switch to a room match after this round', 'info', 2600);
+    }
+    // Everyone else left the room match: back to a match against bots.
+    if (this.format === 'room' && !others) { if ((this.aloneT += dt) > 3) { this.aloneT = -1e9; this.restartSoon(G, 'Everyone else left. Starting a match against bots'); } }
+    else this.aloneT = 0;
     if (this.format === 'room' && this.winner && Shared.isHost()) this.endRoom(G, this.winner);
     // phases
     if (this.phase === 'pick' || this.phase === 'count' || this.phase === 'roundEnd') this.t -= dt;
-    if (this.phase === 'pick') { G.hud.updatePanel({ text: `Round starts in ${Math.ceil(this.t)}` }); if (this.t <= 0) { this.hidePick(G); this.phase = 'count'; this.t = 3.2; } }
+    if (this.phase === 'pick') {
+      const n = Math.ceil(this.t); if (n !== this.pickN) { this.pickN = n; G.hud.updatePanel({ text: `Round starts in ${n}` }); }
+      if (this.t <= 0) { this.hidePick(G); this.phase = 'count'; this.t = 3.2; }
+    }
     else if (this.phase === 'count') { const n = Math.ceil(this.t); if (n !== this.lastN) { this.lastN = n; if (n > 0 && n <= 3) { G.hud.flash(String(n), 'info', 700); Sfx.play('tick'); } } if (this.t <= 0) { this.phase = 'fight'; G.frozen = false; G.hud.flash('Go!', 'good', 700); Sfx.play('boost'); } }
     else if (this.phase === 'roundEnd' && this.t <= 0) {
-      if (this.wins[0] >= o.rounds || this.wins[1] >= o.rounds) { const win = this.wins[0] >= o.rounds; G.end({ win, title: win ? 'You win the match!' : 'Your rival wins the match', sub: `Rounds ${this.wins[0]} - ${this.wins[1]}`, stats: this.stats(G) }); return; }
+      if (this.wins[0] >= o.rounds || this.wins[1] >= o.rounds) { const win = this.wins[0] >= o.rounds; G.end({ win, title: win ? (this.format === 'teams' ? 'Your team wins the match!' : 'You win the match!') : (this.format === 'teams' ? 'The rivals win the match' : `${this.bots[0] ? this.bots[0].name : 'Your rival'} wins the match`), sub: `Rounds ${this.wins[0]} - ${this.wins[1]}`, stats: this.stats(G), againLabel: this.againLabel(G) }); return; }
       this.nextRound(G);
     }
     if (this.respawnIn > 0 && (this.respawnIn -= dt) <= 0) { const sp = this.spawnPos(0, Math.floor(G.R() * 6)); G.setCheckpoint(sp); G.respawn(true); }
@@ -296,7 +358,11 @@ Modes.rivals = {
       }
     }
     if (this.format === 'ffa' || this.format === 'room') G.hud.stat('splats', `${G.score} / ${o.target}`, { icon: 'target' });
-    if (this.format === 'ffa') G.hud.board([{ name: Profile.displayName(), value: G.score, me: true }, ...this.bots.map(b => ({ name: b.name, value: b.data.splats }))].sort((a, b) => b.value - a.value), 'Splats');
+    if (this.format === 'ffa') this.ffaBoard(G);
+    else if (this.format === 'room' && (this.boardT = (this.boardT || 0) - dt) <= 0) {
+      this.boardT = 0.5; // everyone's splats in the room match
+      G.hud.board([{ name: Profile.displayName(), value: G.score, me: true }, ...G.others().map(o => ({ name: o.name, value: o.sc }))].sort((a, b) => b.value - a.value), 'Splats');
+    }
     // bots
     for (const b of this.bots) this.botThink(b, dt, G);
   },
@@ -420,7 +486,8 @@ Modes.knockout = {
     if (this.phase === 'count') { this.cd -= dt; const n = Math.ceil(this.cd); if (n !== this.lastN) { this.lastN = n; if (n > 0) { G.hud.flash(String(n), 'info', 600); Sfx.play('tick'); } } if (this.cd <= 0) { this.phase = 'fight'; G.frozen = false; G.hud.flash('Push!', 'good', 700); } return; }
     if (this.phase === 'after') { if ((this.cd -= dt) <= 0) { if (this.round >= 3 || this.wins >= 2 || this.losses >= 2) G.end({ win: this.wins >= 2, title: this.wins >= 2 ? 'Push Party champion!' : 'Knocked out of the party', stats: [['Rounds won', this.wins], ['Rounds lost', this.losses]] }); else this.next(G); } return; }
     this.t += dt;
-    for (const [tag, at] of [['ring3', 25], ['ring2', 50]]) if (this.t >= at && this.t - dt < at) { for (const p of G.partsByTag(tag)) { G.setPartVisible(p.id, false); G.setPartSolid(p.id, false); } G.hud.flash('The floor is shrinking!', 'bad', 1400); Sfx.play('break'); }
+    // Rings drop at 25, 50 and 75 seconds; the last small disc means every round ends.
+    for (const [tag, at] of [['ring3', 25], ['ring2', 50], ['ring1', 75]]) if (this.t >= at && this.t - dt < at) { for (const p of G.partsByTag(tag)) { G.setPartVisible(p.id, false); G.setPartSolid(p.id, false); } G.hud.flash('The floor is shrinking!', 'bad', 1400); Sfx.play('break'); }
     for (const b of this.bots) {
       if (!b.alive) continue;
       const others = [[G.body.pos, 'me'], ...this.bots.filter(o => o !== b && o.alive).map(o => [o.pos, o])].filter(([, w]) => w !== 'me' || !G.dead);
@@ -441,6 +508,7 @@ Modes.knockout = {
 Modes.paintpark = Object.assign({}, Modes.rivals, {
   label: 'Paint the Park', hint: 'WASD to move · Click to shoot paint · Space to jump · Cover the floor in orange',
   defaults: { format: 'teams', weapons: ['splatter'], rounds: 1, time: 90 },
+  roomMatch: false, // the paint and tiles are not shared, so everyone paints with their own bot teams
   setup(G) {
     this.tiles = G.partsByTag('ptile'); this.owner = new Map(); this.timeLeft = G.modeOpts.time || 90;
     Modes.rivals.setup.call(this, G);
