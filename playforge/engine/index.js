@@ -1,5 +1,5 @@
 // PlayForge engine entry point. Browser only: load it with `await import('@/playforge/engine')` (or through
-// components/playforge/useEngine.js) after the page mounts, never at module top level of a server-rendered file.
+// components/playforge/engine.js: useEngine/loadEngine) after the page mounts, never at module top level of a server-rendered file.
 import { Profile, Settings } from './core.js';
 import { Engine } from './render.js';
 import { Input } from './input.js';

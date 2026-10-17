@@ -32,9 +32,6 @@ export function normHex(s) {
 export function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#888888'; }
 // Toasts and confirm dialogs live in stores.js; the React shell renders them.
 export { toast, askChoice } from './stores.js';
-// TEMPORARY no-op stand-ins so modules not yet moved to React still link. Remove once nothing imports them.
-export const Modals = { stack: [], open() {}, close() {}, top() { return null; } };
-export function showScreen() {}
 
 /* ---------- 2. Settings ---------- */
 export const PRESETS = {
@@ -154,6 +151,8 @@ export const WordFilter = (() => {
 export const Caps = { online: false, room: undefined, roomP: null, downloads: null, ready: false };
 // The signed-in player. id is the server's user id; token authenticates API and socket calls.
 export const Me = { id: null, token: '', accountName: '', color: '#FF6A2B', guestId: '', guestName: '' };
+// Set while this device holds profile changes the server hasn't received yet.
+const PROFILE_UNSENT = 'pf.v2.profile.unsent';
 export const validPng = s => typeof s === 'string' && s.startsWith('data:image/png;base64,') && s.length < 120000;
 
 export const Profile = {
@@ -182,6 +181,8 @@ export const Profile = {
   backend: null,
   async attachCloud() {
     const be = this.backend; if (!be) return;
+    // Changes saved here while the server was unreachable win over the server copy: send them instead of loading.
+    if (LS.get(PROFILE_UNSENT, false)) { await this.persist(); return; }
     try {
       const d = await be.load(); if (!d) return;
       if (Array.isArray(d.slots)) this.slots = [0, 1, 2, 3, 4].map(i => (validPng(d.slots[i]) ? d.slots[i] : null));
@@ -195,11 +196,15 @@ export const Profile = {
   persist() {
     this.saveLocal();
     const job = this._chain.then(async () => {
-      const be = this.backend; if (!be) return 'device';
+      const be = this.backend; if (!be) { LS.set(PROFILE_UNSENT, true); return 'device'; }
       try {
         await be.save({ slots: this.slots.map(s => s || ''), active: this.active, nick: this.nick, skin: this.slots[this.active] || '' });
-        this.where = 'cloud'; return 'cloud';
-      } catch (e) { console.warn('PlayForge: cloud save failed', e); return 'device'; }
+        LS.set(PROFILE_UNSENT, false); this.where = 'cloud'; return 'cloud';
+      } catch (e) {
+        LS.set(PROFILE_UNSENT, true);
+        if (!e || e.status !== 0) console.warn('PlayForge: cloud save failed', e);
+        return 'device';
+      }
     });
     this._chain = job.catch(() => {});
     return job;

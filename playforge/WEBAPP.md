@@ -24,6 +24,7 @@ build. Treat them as read-only reference: the original markup is in `playforge/s
 | `app/(playforge)/g/[id]/page.js` | `/g/<gameId>` play a game (built-in id, or a community game id `u-xxxxxxxx`) |
 | `app/(playforge)/studio/[id]/page.js` | `/studio/<draftId>`, `/studio/new`, `/studio/new?remix=<gameId>` |
 | `app/(playforge)/avatar/page.js` | `/avatar` avatar and skin editor |
+| `/` query | `?q=<search>` and `?row=<rowId>` (See all) keep search and grids in the address |
 | `app/voxel/`, `app/play/[room]/` | Voxel Realms (do not change) |
 | `components/playforge/` | Shared: `Shell.js`, `engine.js` (`useEngine`, `loadEngine`), `useStore.js`, `Icon.js`, `Modal.js` |
 | `components/playforge/{home,game,studio,avatar,settings}/` | Screen components |
@@ -46,8 +47,6 @@ build. Treat them as read-only reference: the original markup is in `playforge/s
   `'home'` again when it unmounts. In `'home'` mode nothing renders except home thumbnails.
 - Engine code writes screen state into stores and only when a value changed (some writers run every frame).
 - New modules export what React needs and register it on `index.js` exports.
-- `core.js` still exports TEMPORARY no-op `Modals` and `showScreen` so old modules link. Remove every use;
-  the final pass deletes them.
 
 ## Stores (`playforge/engine/stores.js`)
 
@@ -65,8 +64,13 @@ build. Treat them as read-only reference: the original markup is in `playforge/s
   `E.Hud.panelPick(optionId)`, `E.Hud.panelButton(buttonId)`, `E.Hud.endAction('again' | 'leave')`.
 - `gameStore` (written by `Game`): `active, loading, loadingTitle, title, test, hint, hintVisible, menuOpen, fps,
   mp, chatOpen`. `E.Game.openMenu()` / `E.Game.closeMenu()`.
-- Each workstream adds its own store in its own module with `createStore` (`netStore` in net.js,
-  `studioStore` in studio.js, `editorStore` in skin-editor.js, `libraryStore` in library.js).
+- `platformStore` (client/platform.js): `ready` (start-up finished, online or not), `online` (the server
+  answered), `connected` (the live socket is up), `user {id, name, nick} | null`.
+- `libraryStore` (library.js): `ready, online, canPublish, published, likeCounts (Map), myLikes (Set), drafts, rev`;
+  replaced on every change, never mutated. Read like counts with `Library.likes(key)`.
+- `netStore` (net.js): `inRoom, phase, status, lines, unread, chatOpen, canChat, note, focusSeq, players, count, empty,
+  canReport, mutes`. `lobbyStore` (net.js): `live` (lobby connected now), `counts {gameId: players}`.
+- `settingsStore` (settings-ui.js), `studioStore` (studio.js), `editorStore` (skin-editor.js): see the screens below.
 
 ## Game screen API (engine)
 
@@ -79,6 +83,30 @@ build. Treat them as read-only reference: the original markup is in `playforge/s
   or by id (see Library below).
 - `<GameScreen>` (components/playforge/game/GameScreen.js) takes `{def, test, onExit}` so Studio can render it
   in place for Test.
+
+## Screens
+
+- **Home** (`components/playforge/home/`): reads `libraryStore`, `lobbyStore`, `platformStore` and the profile
+  (`Profile.onChange` returns an unsubscribe). Thumbnails: `E.Thumbs.get(def, cb)` renders one at a time while
+  `Engine.mode` is `'home'`; `E.statusLine()` is the player card's status text.
+- **Game** (`components/playforge/game/`): `<GameScreen def test onExit>`; the route `/g/[id]` resolves built-in ids
+  with `E.gameById` and community ids with `E.Library.loadById`. Settings: `components/playforge/settings/SettingsModal.js`
+  with `E.openSettings()`, `E.applySetting(key, value)`.
+- **Studio** (`components/playforge/studio/`, `playforge/engine/studio.js`): routes `/studio/new` (creates a draft,
+  then `router.replace('/studio/<id>')`), `/studio/new?remix=<gameId>`, `/studio/<draftId>`. `E.Studio`:
+  `createDraft()`, `remixDraft(def)`, `attach(viewEl, {blocked}) -> detach`, `open(doc)`, `leave()`, `close()`,
+  `test() -> def`, `resume()`, `publish() -> {id, again, title} | null`, `editProps(label, fn, ids)`,
+  `setParam(ids, prm, v, k)`, `rows()`, and the game-settings setters. `studioStore`: `open, id, title, published,
+  status, rev, metaRev, count, sel, tool, snapOn, snapStep, canUndo, canRedo, hint, drawer, pane, drawerSeq,
+  testing, publishing`. Parts may carry `locked: true` (taps don't select them; big floors are locked).
+- **Avatar** (`components/playforge/avatar/`, `playforge/engine/skin-editor.js`): `E.Editor.attach(view, {blocked,
+  onBack}) -> detach`, `attachMap(canvas, panel)`, `bindThumb(canvas)`, `enter()` on mount, `exit()` on unmount,
+  `confirmLeave() -> Promise<boolean>`. `editorStore`: `open, ready, status, dirty, saving, canUndo, canRedo, tool,
+  size, mirror, grid, layer, turn, color, recent, slot, worn, slots, tab, caption, hint, nick, nickDefault,
+  nickHelp, nickError, nickClear, nickSeq, canDownload`. Unsaved work is kept in
+  `sessionStorage['pf.v2.avatar.draft']` when the browser's Back leaves the page.
+- **Game modes**: a mode can set `roomMatch: false` to opt out of player-vs-player room matches; blaster games
+  publish `{hp, dead, room, end}` through `Net.setPublic` (others read it as `.x`).
 
 ## Platform layer (`playforge/client/`)
 
@@ -94,7 +122,8 @@ build. Treat them as read-only reference: the original markup is in `playforge/s
 - `E.Caps.room`: a `RoomClient` for the lobby, the same interface as the claude.ai room capability, so
   `engine/net.js` keeps its logic: `presence(patch) -> Promise`, `emit(topic, data) -> Promise`,
   `on(topic, fn) -> unsubscribe`, `onPeers(fn, onError) -> unsubscribe` (fn gets `{peers, joined, left, updated}`),
-  `join(name) -> Promise<RoomClient>`, `leave() -> Promise`, `name`. Peers: `{peer, by, isMe, sameTab, kind:
+  `join(name, presence?) -> Promise<RoomClient>` (the starting presence goes with the join), `leave() -> Promise`,
+  `flush()` (send a waiting presence change now), `name`. Peers: `{peer, by, isMe, sameTab, kind:
   'viewer', guest: false, presence, updatedAt}` (`peer` = connection id, `by` = user id, `isMe` = same user,
   `sameTab` = this connection).
 - `E.Library` (`engine/library.js`) keeps its public API (`published, likeCounts, myLikes, onChange, drafts,
@@ -103,6 +132,12 @@ build. Treat them as read-only reference: the original markup is in `playforge/s
   `loadById(gameId)`. Drafts stay in `localStorage` on the device.
 - Player skins and names for other players: `GET /api/pf/players/:id`; the server announces profile saves so
   open rooms refresh that avatar.
+- After start-up `E.Caps` holds `online, ready, room, roomP, api, onServer(fn), players {getPlayer,
+  onPlayerChanged}, report(...), downloads`. Library calls throw errors whose `message` is a code: `limit`,
+  `offline`, `signin`, `forbidden`, `invalid`, `not_found`, `rate_limited` or `failed`.
+- With the server unreachable the page starts offline (drafts work; Publish and Like are hidden; game rooms fall
+  back to solo after 15 s) and comes online by itself when the server answers.
+- Presence key `aw: 1` marks a hidden page; hidden players host only when everyone is away.
 
 ## Server
 
@@ -147,6 +182,18 @@ WebSocket `/pf-ws?token=<token>` (JSON messages):
   every socket: `{t: 'games'}` (published games changed), `{t: 'likes', key, count}`, `{t: 'player', id}`
   (a profile was saved).
 - The server pings every 20 s and drops dead sockets. Leaving a socket leaves its rooms.
+- Also: the server sends `{t: 'hello', peer, user}` on connect; `{t: 'ping'}` gets `{t: 'pong'}`;
+  `/pf-ws?token=..&replace=<peer>` lets a reconnecting page take over its old connection (same peer id and rooms);
+  a socket that drops without a close frame keeps its seat for 5 s; peer changes are batched (50 ms in game rooms,
+  250 ms in the lobby); chat needs a 750 ms gap per player on the server (pages enforce 1 per second).
+- REST extras: `GET /me/profile` returns `updatedAt`; `PUT /games/:id` accepts `spawn`; the full game returns `spawn`
+  and `partsCount`; liking an unpublished community id is 404; a nick with bad words or characters is refused
+  (`bad_nick`, `bad_word`) while titles and descriptions are masked; saving a profile renames that player's
+  published games.
+- Rate limits: 60 writes a minute per player, 30 publishes per 5 min, 10 reports per 10 min, 100 new guests per
+  10 min per IP. Environment: `MONGODB_URI`, `PF_DATA_DIR`, `PF_GUEST_LIMIT`, `PF_PING_MS`.
+- When MongoDB is used for the first time and has no PlayForge players yet, the local JSON file (if any) is copied
+  in once, so local data moves over to a hosted database.
 
 ## Testing
 
@@ -171,18 +218,15 @@ WebSocket `/pf-ws?token=<token>` (JSON messages):
   no emoji in UI text.
 - Hide a feature when its service is missing (for example Publish and Like when the server is offline).
 
-## File ownership (workstreams)
+## Module map
 
-| Workstream | Owns |
+| Area | Files |
 | --- | --- |
-| Platform | `lib/playforge/**`, `server.js` (PlayForge wiring only), `playforge/client/**`, `playforge/engine/library.js` |
-| Game screen | `playforge/engine/net.js`, `playforge/engine/settings-ui.js` (remove or turn into helpers), `components/playforge/game/**`, `components/playforge/settings/**`, `app/(playforge)/g/**` |
-| Home | `playforge/engine/home.js` (becomes thumbnails and status helpers), `components/playforge/home/**`, `app/(playforge)/page.js` |
+| Platform | `lib/playforge/**`, the PlayForge wiring in `server.js`, `playforge/client/**`, `playforge/engine/library.js` |
+| Game screen | `playforge/engine/net.js`, `playforge/engine/settings-ui.js`, `components/playforge/game/**`, `components/playforge/settings/**`, `app/(playforge)/g/**` |
+| Home | `playforge/engine/home.js`, `components/playforge/home/**`, `app/(playforge)/page.js` |
 | Studio | `playforge/engine/studio.js`, `components/playforge/studio/**`, `app/(playforge)/studio/**` |
 | Avatar | `playforge/engine/skin-editor.js`, `components/playforge/avatar/**`, `app/(playforge)/avatar/**` |
 | Games | `playforge/engine/games/**`, `playforge/engine/modes-base.js` |
-
-Shared files (`core.js`, `render.js`, `world.js`, `game.js`, `hud.js`, `input.js`, `stores.js`, `index.js`,
-`components/playforge/*.js`, `playforge/web/playforge.css`): make small additive changes only, with the Edit
-tool (never rewrite the whole file), and say what you changed in your report. Put a workstream's new styles in
-its own `playforge/web/<area>.css` imported by its components.
+| Shared engine | `core.js`, `render.js`, `world.js`, `physics.js`, `game.js`, `hud.js`, `input.js`, `stores.js`, `index.js` |
+| Shared UI | `components/playforge/*.js`, `playforge/web/*.css` |

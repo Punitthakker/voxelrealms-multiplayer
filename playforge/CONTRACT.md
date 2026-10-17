@@ -197,15 +197,14 @@ Solo (no room) works the same: you are the host and acts arrive locally.
 - Performance budget per game on a mid-range phone: < 600 parts, ≤ 6 bots, ≤ 3 extra lights, no per-frame allocation
   in hot loops where avoidable, no per-frame DOM writes unless the value changed (Hud.stat already caches).
 
-## Studio (`76-studio.js`)
+## Studio
 
-`Studio.newGame()`, `Studio.open(draftDoc)`, `Studio.remix(def)` open the editor; leaving saves the draft (with a
-jpeg thumbnail in `doc.thumb`) and calls `Home.onReturn()`. The doc is a Library draft: `{id, title, desc, mode,
-modeOpts, env, killY, spawnYaw, parts}` where `parts` holds parts and group nodes `{id, name, shape: 'group'}`;
-a part joins a group with `parent`. Studio adds the doc's own part objects to the world (edit mode: no colliders,
-nothing moves), so a change is "edit the object, then `World.refreshPart(p)`". Every change goes through
-`Studio.edit(label, ids, fn)` (or `beginEdit`/`endEdit` for drags) so undo/redo can restore exact snapshots.
-Test runs `Game.enter(Library.toDef(doc), {test: true, onExit})`.
+The web app's Studio API (routes, `E.Studio`, `studioStore`, the `locked` part flag) is in `playforge/WEBAPP.md`
+(Screens). The doc is a Library draft: `{id, title, desc, mode, modeOpts, env, killY, spawnYaw, parts}` where
+`parts` holds parts and group nodes `{id, name, shape: 'group'}`; a part joins a group with `parent`. Studio adds
+the doc's own part objects to the world (edit mode: no colliders, nothing moves), so a change is "edit the object,
+then `World.refreshPart(p)`", and every change goes through an undoable edit step. Test renders the game screen
+in place with `{def: Library.toDef(doc), test: true, onExit}`.
 
 ## File ownership
 

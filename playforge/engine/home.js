@@ -73,7 +73,3 @@ export const Thumbs = {
     if (window.requestIdleCallback) requestIdleCallback(run, { timeout: 700 }); else setTimeout(run, 40);
   },
 };
-
-// TEMPORARY: studio.js and skin-editor.js (other workstreams) still import Home and call these. They do nothing now:
-// the React home screen re-reads the Library and the profile whenever it shows. Remove once nothing imports it.
-export const Home = { onReturn() {}, renderMe() {}, updateOnline() {} };
